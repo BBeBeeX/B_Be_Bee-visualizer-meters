@@ -22,6 +22,8 @@
   ],
   "provides": [],
   "repo": "https://github.com/BBeBeeX/B_Be_Bee-visualizer-meters",
+  "reviewedIntegrity": "sha512-JXHqn/WR27uDXbBOIPdKa7ZgpQyTSiJbLZyR2UWlDsi7qP7qPDxiIy+8PsejgvkEf273K942ZklN6FLW7H10oQ==",
+  "reviewedVersion": "0.1.0",
   "services": [
     "visualizer"
   ]
