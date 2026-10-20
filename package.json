@@ -14,7 +14,7 @@
   ],
   "license": "MIT",
   "main": "dist/index.js",
-  "name": "bbebee-plugin-visualizer-meters",
+  "name": "@bbebee/plugin-visualizer-meters",
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

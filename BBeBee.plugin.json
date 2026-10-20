@@ -24,7 +24,7 @@
   },
   "id": "bbebee-plugin-visualizer-meters",
   "moduleId": "dsp",
-  "name": "bbebee-plugin-visualizer-meters",
+  "name": "@bbebee/plugin-visualizer-meters",
   "systemId": "layer-4",
   "version": "0.1.0"
 }

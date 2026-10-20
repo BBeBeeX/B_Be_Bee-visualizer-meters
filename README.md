@@ -1,6 +1,6 @@
 # Visualizer Meters — a third-party-style BBeBee plugin
 
-This repository is the home of **`bbebee-plugin-visualizer-meters`**, a
+This repository is the home of **`@bbebee/plugin-visualizer-meters`**, a
 complete, publishable BBeBee plugin package written the way a third-party
 author writes one: **one npm package, one `BBeBee.plugin.json`, a headless
 entry and a desktop UI entry**, no monorepo wiring. It started life as the
@@ -42,7 +42,7 @@ not own: the `visualizer` service of the first-party
 
 ```
 package.json            name/version/files + peerDependencies (the npm face)
-BBeBee.plugin.json      the 15-field plugin manifest (id = package name)
+BBeBee.plugin.json      the 15-field plugin manifest (name = npm package name, id = unscoped slug)
 registry-entry.json     the registry (schema v2) entry — see "Publishing"
 build.mjs               esbuild: src/index.ts → dist/index.js,
                         src/ui.tsx → dist/ui-desktop.js, plus the
@@ -150,9 +150,12 @@ npm run build
 npm publish
 ```
 
-The package name, the manifest `id` and the registry entry's `npm` field
-are all the same string — `bbebee-plugin-visualizer-meters` — which is
-what the install-time anti-spoofing checks compare against each other.
+The npm package name and the registry entry's `npm` field are the same
+string — `@bbebee/plugin-visualizer-meters` — while the manifest `id`
+(and the registry entry's `id`) is the unscoped slug
+`bbebee-plugin-visualizer-meters`. The install-time anti-spoofing checks
+compare the pairs separately: the published package's name against the
+entry's `npm`, its manifest `id` against the entry's `id`.
 
 ### 2. Register it in B_Be_Bee-registry
 
@@ -169,7 +172,7 @@ community registry. To list the plugin:
    the `npm` field exists and that its published manifest id and package
    name match the entry. **Publish to npm first** (step 1); before the
    first publish, validation reports, verbatim:
-   `npm package "bbebee-plugin-visualizer-meters" does not exist on the public npm registry (HTTP 404) — publish it before submitting, or fix the "npm" field`.
+   `npm package "@bbebee/plugin-visualizer-meters" does not exist on the public npm registry (HTTP 404) — publish it before submitting, or fix the "npm" field`.
 
 Two details of the entry are easy to get wrong:
 
