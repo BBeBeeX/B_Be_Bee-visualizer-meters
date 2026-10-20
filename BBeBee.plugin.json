@@ -1,0 +1,30 @@
+{
+  "author": "BBeBee Team",
+  "capabilities": [],
+  "contributes": {
+    "slots": [
+      "now-playing.visualizer"
+    ]
+  },
+  "dependencies": [
+    "@BBeBee/plugin-visualizer"
+  ],
+  "description": "Example third-party plugin: spectrogram, spectrum and VU meter views driven by the visualizer service.",
+  "displayName": "Visualizer Meters",
+  "effect": null,
+  "enabled": true,
+  "engines": {
+    "BBeBee": "^0.1.0"
+  },
+  "entry": {
+    "main": "./dist/index.js",
+    "ui": {
+      "desktop": "./dist/ui-desktop.js"
+    }
+  },
+  "id": "bbebee-plugin-visualizer-meters",
+  "moduleId": "dsp",
+  "name": "bbebee-plugin-visualizer-meters",
+  "systemId": "layer-4",
+  "version": "0.1.0"
+}

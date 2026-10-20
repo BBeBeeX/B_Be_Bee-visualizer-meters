@@ -1,0 +1,28 @@
+{
+  "author": "BBeBee Team",
+  "description": "BBeBee example plugin (third-party style): spectrogram, spectrum and VU meters powered by the visualizer service.",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "BBeBee.plugin.json",
+    "dist"
+  ],
+  "license": "MIT",
+  "main": "dist/index.js",
+  "name": "bbebee-plugin-visualizer-meters",
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/meters-math.test.ts"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

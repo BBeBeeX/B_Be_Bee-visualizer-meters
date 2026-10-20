@@ -1,0 +1,28 @@
+{
+  "author": "BBeBee Team",
+  "category": "ui-enhancement",
+  "compositors": [
+    "now-playing.visualizer"
+  ],
+  "dependencies": [
+    "bbebeex-visualizer@^0.1.0"
+  ],
+  "description": "Example third-party plugin: spectrogram, spectrum and VU meter views powered by the visualizer service.",
+  "engines": {
+    "bbebee": ">=0.1.0"
+  },
+  "i18n": [
+    "en"
+  ],
+  "id": "bbebee-plugin-visualizer-meters",
+  "name": "Visualizer Meters",
+  "npm": "bbebee-plugin-visualizer-meters",
+  "platforms": [
+    "desktop"
+  ],
+  "provides": [],
+  "repo": "https://github.com/BBeBeeX/B_Be_Bee-visualizer-meters",
+  "services": [
+    "visualizer"
+  ]
+}
