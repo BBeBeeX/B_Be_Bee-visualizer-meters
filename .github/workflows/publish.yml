@@ -1,0 +1,122 @@
+# Publishes @bbebee/plugin-visualizer-meters to npm WITH provenance
+# (audit W6).
+#
+# Why this workflow exists: the 0.1.0 launch went out from a local
+# machine via staged publishing, so it carries no provenance
+# attestation. npm provenance is minted from the GitHub Actions OIDC
+# environment at publish time — it cannot be retrofitted onto an
+# already-published version — so official packages are (re)published
+# from a workflow like this one.
+#
+# TRUSTED PUBLISHING — one-time setup on npmjs.com; no long-lived
+# npm token is stored in this repo or anywhere else:
+#
+#   npmjs.com → package @bbebee/plugin-visualizer-meters → Settings
+#   → Trusted Publisher → GitHub Actions:
+#       Organization or user:  BBeBeeX
+#       Repository:            B_Be_Bee-visualizer-meters
+#       Workflow filename:     publish.yml
+#       Environment name:      (leave empty)
+#
+# With that in place, `npm publish` below exchanges this job's OIDC
+# token (permissions: id-token: write) for a short-lived publish
+# credential, and npm attaches a SLSA provenance attestation naming
+# this repository and workflow as the package's source. The plugin
+# client and the registry CI both verify that the attestation's
+# source repository equals the registry entry's `repo`
+# (https://github.com/BBeBeeX/B_Be_Bee-visualizer-meters) — a package
+# built anywhere else is refused as spoofing.
+#
+# npm CLI >= 11.5.1 is required for trusted publishing; the setup
+# step below fails loudly on an older CLI instead of silently
+# publishing without provenance.
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.1.1) — must not already exist on npm'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build, test and pack only; do not publish'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write # OIDC: npm trusted publishing + provenance attestation
+
+jobs:
+  publish:
+    name: Build and publish @bbebee/plugin-visualizer-meters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Require an npm CLI new enough for trusted publishing
+        run: |
+          NPM_VERSION="$(npm --version)"
+          echo "npm $NPM_VERSION"
+          node -e '
+            const [maj, min, patch] = process.argv[1].split(".").map(Number)
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)))
+            if (!ok) {
+              console.error(`npm >= 11.5.1 is required for trusted publishing, got ${process.argv[1]}`)
+              process.exit(1)
+            }
+          ' "$NPM_VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The published version is the dispatch input, not whatever
+      # happens to be committed: stamp it into package.json /
+      # package-lock.json for this run only (the checkout is thrown
+      # away afterwards; bump the committed files separately if the
+      # repo should track the release). BBeBee.plugin.json carries its
+      # own version field and the installer refuses a package whose
+      # manifest and package.json versions disagree, so stamp both.
+      - name: Stamp the release version
+        run: |
+          npm version "${{ inputs.version }}" --no-git-tag-version --allow-same-version
+          node -e '
+            const fs = require("fs")
+            const m = JSON.parse(fs.readFileSync("BBeBee.plugin.json", "utf8"))
+            m.version = process.argv[1]
+            fs.writeFileSync("BBeBee.plugin.json", JSON.stringify(m, null, 2) + "\n")
+            console.log(`manifest version stamped: ${m.version}`)
+          ' "${{ inputs.version }}"
+
+      # build.mjs enforces the host-module contract on the output
+      # (host-shared modules stay external, no bundled React in the
+      # UI bundle, no host imports in the headless bundle).
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Verify the package identity and file set
+        run: |
+          node -e '
+            const p = require("./package.json")
+            const m = require("./BBeBee.plugin.json")
+            const want = process.argv[1]
+            if (p.name !== "@bbebee/plugin-visualizer-meters") throw new Error(`package name drift: ${p.name}`)
+            if (p.version !== want) throw new Error(`package version drift: ${p.version} != ${want}`)
+            if (m.id !== "bbebee-plugin-visualizer-meters") throw new Error(`manifest id drift: ${m.id}`)
+            if (m.version !== p.version) throw new Error(`manifest version ${m.version} != package version ${p.version}`)
+            console.log(`package OK: ${p.name}@${p.version}, manifest id ${m.id}`)
+          ' "${{ inputs.version }}"
+          npm pack --dry-run
+
+      - name: Publish to npm with provenance
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public

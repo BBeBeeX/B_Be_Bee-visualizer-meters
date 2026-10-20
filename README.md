@@ -143,12 +143,37 @@ upload.
 
 ## Publishing
 
-### 1. Publish the package to npm
+### 1. Publish the package to npm — from CI, with provenance
 
-```bash
-npm run build
-npm publish
-```
+Releases are published by `.github/workflows/publish.yml`
+(**Actions → Publish to npm → Run workflow**, version as input). The
+workflow stamps the version into `package.json` and
+`BBeBee.plugin.json`, builds, tests, verifies the publication
+identity, and runs `npm publish --provenance`.
+
+Publishing from CI is not a convenience choice: npm **provenance**
+attestations — the signed statement of which repository and workflow
+built a version — are minted from the GitHub Actions OIDC
+environment and cannot be added to a version after the fact. The
+0.1.0 launch predates this (local machine, staged publishing) and
+carries no attestation; every later release should come from the
+workflow. The plugin client refuses an install whose attestation
+names a different source repository than the registry entry's
+`repo`, and registry CI checks official entries the same way.
+
+One-time setup on npmjs.com (trusted publishing — no long-lived npm
+token exists anywhere): package **@bbebee/plugin-visualizer-meters**
+→ Settings → Trusted Publisher → GitHub Actions, with organization
+`BBeBeeX`, repository `B_Be_Bee-visualizer-meters`, workflow filename
+`publish.yml`.
+
+After a release, update the registry entry's pin: set
+`reviewedVersion` to the new version and `reviewedIntegrity` to that
+version's `dist.integrity` from its npm packument.
+
+Manual publishing (`npm run build && npm publish` from a checkout)
+still works in a pinch, but the result has no provenance and should
+be replaced by a CI release.
 
 The npm package name and the registry entry's `npm` field are the same
 string — `@bbebee/plugin-visualizer-meters` — while the manifest `id`
@@ -164,9 +189,9 @@ community registry. To list the plugin:
 
 1. Copy it into the
    [B_Be_Bee-registry](https://github.com/BBeBeeX/B_Be_Bee-registry) repo
-   as `plugins/bbebeex-visualizer-meters.json` (entry filenames are
-   `{github-owner}-{name}.json`, a convention separate from the entry
-   `id` inside) and open a PR there.
+   as `plugins/bbebee-plugin-visualizer-meters.json` (the entry
+   filename must equal the entry `id`; registry validation rejects a
+   mismatch) and open a PR there.
 2. Registry CI validates the entry: field shape, the `services`
    whitelist, and — by fetching the npm packument — that the package in
    the `npm` field exists and that its published manifest id and package
