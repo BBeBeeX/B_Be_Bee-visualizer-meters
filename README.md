@@ -204,15 +204,17 @@ Two details of the entry are easy to get wrong:
   `https://registry.npmjs.org/%40bbebee%2Fplugin-visualizer-meters`).
   It carries neither a version (it addresses the package, not a
   release) nor a hash, and registry CI rejects any value other than
-  the exact derivation. It is a reference address; clients still
-  resolve downloads through their effective registry (mirror-aware).
+  the exact derivation. Normally clients resolve downloads through
+  their effective registry (mirror-aware); when that download proves
+  ineffective, the client falls back to this address, re-resolving
+  the plan's exact version from the official packument.
 - **`services: ["visualizer"]`** — passes the registry whitelist because
   `visualizer` is in the registry's core service-key list
   (`scripts/lib/service-keys.ts` in B_Be_Bee-registry); service keys that
   are *not* core keys are covered by the providing entry's `provides`.
 - **The dependency names the visualizer's *registry* id.**
   `dependencies: ["bbebeex-visualizer@^0.1.0"]` — a lowercase slug, a
-  different namespace from the manifest id (`@BBeBee/plugin-visualizer`)
+  different namespace from the manifest id (`@bbebee/plugin-visualizer`)
   that this package's own `BBeBee.plugin.json` `dependencies` uses. The
   registry's dependency grammar (and the client's `parseDepSpecifier`)
   accepts slugs only; writing the manifest-id form here is rejected
