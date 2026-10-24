@@ -24,7 +24,7 @@ export type MetersMode = 'spectrum' | 'spectrogram' | 'vu'
 export type MetersPaletteName = 'ember' | 'ice' | 'mono'
 
 export interface MetersConfig {
-  /** Which meter the view shows first (and the settings card's default). */
+  /** Which meter the page shows first. */
   mode: MetersMode
   /** Pseudocolor palette for spectrum / spectrogram / VU rendering. */
   palette: MetersPaletteName

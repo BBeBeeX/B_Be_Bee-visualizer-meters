@@ -1,11 +1,7 @@
 {
   "author": "BBeBee Team",
   "capabilities": [],
-  "contributes": {
-    "slots": [
-      "now-playing.visualizer"
-    ]
-  },
+  "contributes": {},
   "dependencies": [
     "@BBeBee/plugin-visualizer"
   ],

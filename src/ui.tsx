@@ -12,9 +12,11 @@
  * How the pieces follow the host's conventions:
  * - The def is a plain structural object (`{ name, inject, apply }`), no
  *   Cordis runtime import — same shape as first-party UI packages.
- * - The view is registered with `ctx.ui.registerView` and contributed into
- *   the `now-playing.visualizer` slot — the same slot the built-in
- *   visualizer canvas uses — via `ctx.ui.contribute({ kind: 'slot', … })`.
+ * - The meters are a full page, not a now-playing slot: the view is
+ *   registered with `ctx.ui.registerView` and contributed as a `route` with
+ *   `placement: ['tray']`, so the plugin tray shows a "Visualizer Meters"
+ *   entry that navigates to the page. Mode and palette switching live in
+ *   the page itself, so there is no separate settings card.
  * - Components receive the plugin `ctx` through a bound closure and read
  *   services with a local `serviceOf` that mirrors `@BBeBee/toolkit/hooks`
  *   (`ctx.reflect.get(key, false)`), so a missing service is a value to
@@ -109,10 +111,10 @@ function serviceOf<T>(ctx: PluginContextLike, key: string): T | undefined {
 /* ── Shared view state (this bundle only) ───────────────────────────────── */
 
 /**
- * Mode + palette live in a tiny module-level store so the meters view and
- * the settings card — both registered by this def, both in this bundle —
- * stay in sync. Seeded from the same defaults the headless half resolves;
- * session-local by design (see `src/config.ts` for why).
+ * Mode + palette live in a tiny module-level store so the meters page
+ * keeps its controls and canvas in sync. Seeded from the same defaults the
+ * headless half resolves; session-local by design (see `src/config.ts` for
+ * why).
  */
 type MetersUiState = MetersConfig
 
@@ -416,7 +418,7 @@ export function MetersView({ ctx, height = 132 }: MetersViewProps): ReactElement
         flexDirection: 'column',
         gap: 6,
         width: '100%',
-        maxWidth: 560,
+        maxWidth: 960,
         color: 'var(--color-text-primary, inherit)',
       }}
     >
@@ -445,23 +447,26 @@ function clampFftSize(value: number): number {
   return Math.min(2048, Math.max(32, 2 ** power))
 }
 
-/* ── The settings card view ─────────────────────────────────────────────── */
+/* ── The meters page ────────────────────────────────────────────────────── */
 
-export function MetersSettingsCard({ ctx }: { ctx: PluginContextLike }): ReactElement {
-  const uiState = useMetersUiState()
+/**
+ * Full-page visualization of the currently playing music, reached from the
+ * plugin tray. The canvas is the same MetersView (mode/palette controls
+ * included); the page just gives it room and notes whether the
+ * `visualizer` service — the live frame source — is available.
+ */
+export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
   const visualizer = serviceOf<VisualizerServiceLike>(ctx, 'visualizer')
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 560 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <ModeSwitch value={uiState.mode} onChange={(mode) => setUiState({ mode })} />
-        <PaletteSwitch value={uiState.palette} onChange={(palette) => setUiState({ palette })} />
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%' }}>
+      <h2 style={{ margin: 0, fontSize: 18 }}>Visualizer Meters</h2>
       <p style={{ margin: 0, fontSize: 12, opacity: 0.75 }}>
-        These defaults seed the Visualizer Meters view in the now-playing screen. The{' '}
-        <code>visualizer</code> service is{' '}
+        Live visualization of the currently playing music. The <code>visualizer</code>{' '}
+        service is{' '}
         {visualizer ? 'available' : 'not available — the meters will show a quiet baseline'}.
         Changes are session-local in this example (see the package README).
       </p>
+      <MetersView ctx={ctx} height={360} />
     </div>
   )
 }
@@ -491,13 +496,17 @@ export async function apply(ctx: PluginContextLike) {
   ctx.logger.info('visualizer-meters ui: loaded')
 
   return ctx.effect(function* () {
-    yield ctx.ui.registerView('visualizer-meters.canvas', bound(ctx, MetersView))
-    yield ctx.ui.registerView('visualizer-meters.settings', bound(ctx, MetersSettingsCard))
+    yield ctx.ui.registerView('visualizer-meters.page', bound(ctx, MetersPage))
+    // A route with tray placement is what puts the entry in the plugin tray
+    // (plugin-ui's `tray` getter); clicking it navigates to this page.
     yield ctx.ui.contribute({
-      kind: 'slot',
-      id: 'visualizer-meters.canvas',
-      slot: 'now-playing.visualizer',
-      order: 20,
+      kind: 'route',
+      id: 'visualizer-meters.page',
+      path: '/visualizer-meters',
+      title: 'Visualizer Meters',
+      icon: 'wave-sine',
+      placement: ['tray'],
+      order: 60,
     })
   }, 'visualizer-meters-ui')
 }

@@ -8,7 +8,7 @@ reference example in the BBeBee repository (`examples/visualizer-meters/`)
 and is maintained here as its own release repo — copy it as the starting
 point for your own plugin.
 
-It adds three audio meters to the now-playing screen — a **spectrogram**
+It adds a Visualizer Meters page, reached from the plugin tray, with three audio meters — a **spectrogram**
 (scrolling waterfall), a **spectrum** (log-spaced frequency bars) and a
 **VU meter** (RMS + peak on a dB scale) — all driven by a service it does
 not own: the `visualizer` service of the first-party
@@ -51,10 +51,10 @@ src/
   config.ts             modes, palettes, defaults, config schema, resolver
   meters-math.ts        pure frame math (levels, VU ballistics, log bands,
                         waterfall ring buffer, palette LUTs)
-  index.ts              headless def: config resolution, settings-card
-                        contribution, optional visualizer watch
-  ui.tsx                UI def: view + settings-card registration into the
-                        `now-playing.visualizer` slot; the canvas meters
+  index.ts              headless def: config resolution, optional
+                        visualizer watch
+  ui.tsx                UI def: meters page registered as a tray route;
+                        the canvas meters
 test/
   meters-math.test.ts   node:test unit tests for the pure modules
 ```
@@ -94,9 +94,8 @@ stay at their silence values and every meter draws its baseline.
   to a new peak, holds ≈45 frames, then falls at 0.35 dB/frame and never
   below the current frame's peak.
 
-Mode and palette can be switched from the segmented control on the view
-itself and from the settings card (Settings → Playback → *Visualizer
-Meters*); both write to one small store inside the UI bundle.
+Mode and palette can be switched from the segmented control on the page
+itself; it writes to one small store inside the UI bundle.
 
 ## Configuration
 
@@ -136,10 +135,9 @@ upload.
    `installed-plugins/` directory and restart — the loader picks up
    external packages from there, checks the manifest, and composes
    `entry.main` + `entry.ui.desktop`.
-3. Play something and open the now-playing screen: the meters view appears
-   in the visualizer slot, after the built-in visualizer canvas. (The
-   visualizer plugin must be enabled for live data; without it the meters
-   draw their idle baseline.)
+3. Play something and open the Visualizer Meters page from the plugin tray.
+   (The visualizer plugin must be enabled for live data; without it the
+   meters draw their idle baseline.)
 
 ## Publishing
 

@@ -6,13 +6,13 @@
  *
  * 1. declare and resolve the plugin's configuration (defaults + schema in
  *    `./config.js`) from whatever config the loader hands `apply()`, and
- * 2. contribute the settings-card metadata for the UI half's settings view,
- *    mirroring how the first-party `plugin-visualizer` contributes its own
- *    settings card (the contribution is metadata; the view itself is
- *    registered by the UI def in `./ui.tsx`).
+ * 2. note when the `visualizer` service it depends on becomes available
+ *    (as an optional dependency, so disabling the visualizer plugin idles
+ *    this one instead of wedging the load order).
  *
  * The interesting half — spectrogram / spectrum / VU views consuming the
- * `visualizer` service — lives in `./ui.tsx`.
+ * `visualizer` service, presented as a tray-navigated page — lives in
+ * `./ui.tsx`.
  *
  * This module is a plain Cordis plugin def: a structural object, no Cordis
  * runtime import. The minimal context surface it uses is typed locally
@@ -34,10 +34,6 @@ interface LoggerLike {
   warn(...args: unknown[]): void
 }
 
-interface UiServiceLike {
-  contribute(contribution: unknown): unknown
-}
-
 /** The slice of the visualizer service this plugin reads (see ui.tsx). */
 interface VisualizerServiceLike {
   readonly settings: { fftSize?: number }
@@ -45,7 +41,6 @@ interface VisualizerServiceLike {
 
 interface ScopedContextLike {
   logger: LoggerLike
-  ui?: UiServiceLike
   visualizer?: VisualizerServiceLike
   effect(fn: unknown, name?: string): unknown
 }
@@ -89,26 +84,6 @@ export async function apply(ctx: PluginContextLike, config?: unknown) {
       `visualizer-meters: visualizer service available${fftSize ? ` (fftSize=${fftSize})` : ''}`,
     )
   })
-
-  // Settings-card metadata, contributed only when the UI service exists
-  // (same pattern as plugin-visualizer's own settings contribution). The
-  // matching view — 'visualizer-meters.settings' — is registered by the UI
-  // def; the contribution is inert metadata until a settings surface reads
-  // it.
-  ctx.inject(['ui'], (scoped) =>
-    scoped.effect(function* () {
-      yield scoped.ui?.contribute({
-        kind: 'settings',
-        id: 'visualizer-meters.settings',
-        section: 'playback',
-        title: 'Visualizer Meters',
-        description:
-          'Default mode and palette for the spectrogram / spectrum / VU meter views',
-        display: 'card',
-        order: 90,
-      })
-    }, 'visualizer-meters-settings-contribution'),
-  )
 
   return () => {
     ctx.logger.info('visualizer-meters: disposed')
