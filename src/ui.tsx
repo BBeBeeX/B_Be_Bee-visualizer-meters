@@ -62,6 +62,7 @@ import {
   stepVu,
   type VuState,
 } from './meters-math.js'
+import { serviceOf } from './service-of.js'
 
 /* ── Minimal host context surface (structural, no runtime imports) ────── */
 
@@ -96,17 +97,8 @@ interface PluginContextLike {
   [key: string]: unknown
 }
 
-/** Local mirror of `@BBeBee/toolkit/hooks`' `serviceOf(ctx, key)`. */
-function serviceOf<T>(ctx: PluginContextLike, key: string): T | undefined {
-  try {
-    const fromReflect = ctx.reflect?.get(key, false)
-    if (fromReflect !== undefined && fromReflect !== null) return fromReflect as T
-  } catch {
-    // fall through to the property access below
-  }
-  const value = ctx[key]
-  return value === undefined || value === null ? undefined : (value as T)
-}
+/* `serviceOf` lives in `./service-of.js` (reflect-only — see that file
+   for why a `ctx[key]` fallback must never come back). */
 
 /* ── Shared view state (this bundle only) ───────────────────────────────── */
 

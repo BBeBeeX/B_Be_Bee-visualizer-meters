@@ -25,7 +25,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/meters-math.test.ts"
+    "test": "node --test test/meters-math.test.ts test/service-of.test.ts"
   },
   "type": "module",
   "version": "0.2.0"
