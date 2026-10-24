@@ -199,6 +199,13 @@ community registry. To list the plugin:
 
 Two details of the entry are easy to get wrong:
 
+- **`npmUrl`** — the entry's canonical npm package address, derived from
+  `npm` (`https://registry.npmjs.org/<encodeURIComponent(npm)>`, here
+  `https://registry.npmjs.org/%40bbebee%2Fplugin-visualizer-meters`).
+  It carries neither a version (it addresses the package, not a
+  release) nor a hash, and registry CI rejects any value other than
+  the exact derivation. It is a reference address; clients still
+  resolve downloads through their effective registry (mirror-aware).
 - **`services: ["visualizer"]`** — passes the registry whitelist because
   `visualizer` is in the registry's core service-key list
   (`scripts/lib/service-keys.ts` in B_Be_Bee-registry); service keys that

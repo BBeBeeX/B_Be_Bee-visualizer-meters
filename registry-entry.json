@@ -17,6 +17,7 @@
   "id": "bbebee-plugin-visualizer-meters",
   "name": "Visualizer Meters",
   "npm": "@bbebee/plugin-visualizer-meters",
+  "npmUrl": "https://registry.npmjs.org/%40bbebee%2Fplugin-visualizer-meters",
   "platforms": [
     "desktop"
   ],
