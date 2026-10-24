@@ -28,5 +28,5 @@
     "test": "node --test test/meters-math.test.ts test/service-of.test.ts"
   },
   "type": "module",
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
