@@ -173,12 +173,12 @@ Manual publishing (`npm run build && npm publish` from a checkout)
 still works in a pinch, but the result has no provenance and should
 be replaced by a CI release.
 
-The npm package name and the registry entry's `npm` field are the same
-string — `@bbebee/plugin-visualizer-meters` — while the manifest `id`
-(and the registry entry's `id`) is the unscoped slug
-`bbebee-plugin-visualizer-meters`. The install-time anti-spoofing checks
+The npm package name, the registry entry's `npm` field, the manifest
+`id` and the registry entry's `id` are one identity —
+`@bbebee/plugin-visualizer-meters`. The install-time anti-spoofing checks
 compare the pairs separately: the published package's name against the
-entry's `npm`, its manifest `id` against the entry's `id`.
+entry's `npm`, its manifest `id` against the entry's `id` (they are the
+same string in both pairs now).
 
 ### 2. Register it in B_Be_Bee-registry
 
@@ -188,7 +188,8 @@ community registry. To list the plugin:
 1. Copy it into the
    [B_Be_Bee-registry](https://github.com/BBeBeeX/B_Be_Bee-registry) repo
    as `plugins/bbebee-plugin-visualizer-meters.json` (the entry
-   filename must equal the entry `id`; registry validation rejects a
+   filename must equal the entry `id`'s file stem — the scoped id with
+   `@` stripped and `/` replaced by `-`; registry validation rejects a
    mismatch) and open a PR there.
 2. Registry CI validates the entry: field shape, the `services`
    whitelist, and — by fetching the npm packument — that the package in
@@ -212,22 +213,17 @@ Two details of the entry are easy to get wrong:
   `visualizer` is in the registry's core service-key list
   (`scripts/lib/service-keys.ts` in B_Be_Bee-registry); service keys that
   are *not* core keys are covered by the providing entry's `provides`.
-- **The dependency names the visualizer's *registry* id.**
-  `dependencies: ["bbebeex-visualizer@^0.1.0"]` — a lowercase slug, a
-  different namespace from the manifest id (`@bbebee/plugin-visualizer`)
-  that this package's own `BBeBee.plugin.json` `dependencies` uses. The
-  registry's dependency grammar (and the client's `parseDepSpecifier`)
-  accepts slugs only; writing the manifest-id form here is rejected
-  outright (`invalid dependency … — expected "<id>" or
-  "<id>@<semver-range>"`). The slug form works because a published
-  package's in-package manifest id is stamped to the registry id at
-  packaging time, which is exactly what the install-time anti-spoofing
-  check compares the entry id against. The dependency is also what makes
-  the `services` requirement satisfiable on a fresh install: the
-  installer resolves the closure, counts the visualizer entry's declared
-  `provides` in its plan-stage availability estimate, and re-verifies the
-  downloaded package's manifest `contributes.services` before activating
-  anything.
+- **The dependency names the visualizer's *registry* id, which is
+  also its manifest id and npm name.**
+  `dependencies: ["@bbebee/plugin-visualizer@^0.1.0"]` — the same
+  string this package's own `BBeBee.plugin.json` `dependencies` uses.
+  The registry's dependency grammar (and the client's
+  `parseDepSpecifier`) accepts scoped ids as well as slugs. The
+  dependency is also what makes the `services` requirement satisfiable
+  on a fresh install: the installer resolves the closure, counts the
+  visualizer entry's declared `provides` in its plan-stage availability
+  estimate, and re-verifies the downloaded package's manifest
+  `contributes.services` before activating anything.
 
 ## Notes for authors copying this plugin
 

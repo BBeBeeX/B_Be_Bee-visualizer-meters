@@ -5,7 +5,7 @@
     "now-playing.visualizer"
   ],
   "dependencies": [
-    "bbebeex-visualizer@^0.1.0"
+    "@bbebee/plugin-visualizer@^0.1.0"
   ],
   "description": "Example third-party plugin: spectrogram, spectrum and VU meter views powered by the visualizer service.",
   "engines": {
@@ -14,7 +14,7 @@
   "i18n": [
     "en"
   ],
-  "id": "bbebee-plugin-visualizer-meters",
+  "id": "@bbebee/plugin-visualizer-meters",
   "name": "Visualizer Meters",
   "npm": "@bbebee/plugin-visualizer-meters",
   "npmUrl": "https://registry.npmjs.org/%40bbebee%2Fplugin-visualizer-meters",
