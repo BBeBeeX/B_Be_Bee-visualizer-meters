@@ -19,6 +19,7 @@ import {
   resizePanel,
   setPanelZoom,
   snapToGrid,
+  studioDashboardWorkspace,
   validateWorkspace,
   WORKSPACE_PRESETS,
 } from '../src/workspace.ts'
@@ -282,4 +283,39 @@ test('resampleToLogRows keeps the peak of each log row', () => {
   const rows = resampleToLogRows(freq, 8)
   assert.equal(rows.length, 8)
   assert.ok([...rows].includes(255))
+})
+
+test('phase-correlation validates as a kind and old workspaces still load', () => {
+  const parsed = validateWorkspace({
+    name: 'Studio',
+    palette: 'aura',
+    snap: true,
+    panels: [
+      { id: 'a', kind: 'phase-correlation', x: 0, y: 0, w: 300, h: 200 },
+      { id: 'b', kind: 'not-a-meter', x: 0, y: 0, w: 300, h: 200 },
+    ],
+  })
+  assert.ok(parsed)
+  assert.deepEqual(
+    parsed!.panels.map((p) => p.kind),
+    ['phase-correlation'],
+  )
+  // Round-trip: the new kind survives serialize/parse.
+  assert.ok(parseWorkspace(JSON.stringify(parsed)))
+})
+
+test('studioDashboardWorkspace lays out all eleven meters in reference rows', () => {
+  const ws = studioDashboardWorkspace('aura')
+  assert.equal(ws.name, 'Studio')
+  assert.equal(ws.panels.length, 11)
+  assert.equal(new Set(ws.panels.map((p) => p.kind)).size, 11)
+  assert.ok(ws.panels.some((p) => p.kind === 'phase-correlation'))
+  // First row: spectrum (wide) + loudness; every panel is clamped sane.
+  const spectrum = ws.panels.find((p) => p.kind === 'spectrum-analyzer')!
+  const loudness = ws.panels.find((p) => p.kind === 'loudness')!
+  assert.equal(spectrum.y, loudness.y)
+  assert.ok(spectrum.w > loudness.w)
+  for (const panel of ws.panels) {
+    assert.ok(panel.w >= 220 && panel.h >= 150, `${panel.kind} meets panel minimums`)
+  }
 })

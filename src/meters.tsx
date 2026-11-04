@@ -1,5 +1,5 @@
 /**
- * meters.tsx — ten independent meter components.
+ * meters.tsx — eleven independent meter components.
  *
  * Each component is self-contained: it takes a `FrameSource` (see
  * `./audio-frame.ts`), pulls one frame per animation tick, and draws
@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import type { ReactElement, RefObject } from 'react'
+import type { CSSProperties, ReactElement, RefObject } from 'react'
 import type { AudioFrame, FrameSource } from './audio-frame.js'
 import { samplesFromBytes, TimeHistory } from './audio-frame.js'
 import type { MetersPaletteName } from './config.js'
@@ -35,11 +35,14 @@ import {
   createVuState,
   dbToFraction,
   DB_FLOOR,
+  HEAT_STOPS,
   logBandEdges,
+  loudnessRange,
   lutColor,
   octaveBandEdges,
   PALETTE_STOPS,
   resampleToLogRows,
+  smoothDisplayValue,
   stepLoudness,
   stepVu,
   WaterfallBuffer,
@@ -47,7 +50,7 @@ import {
   type VuState,
 } from './meters-math.js'
 import type { MeterKind } from './workspace.js'
-import { AURA } from './aura-theme.js'
+import { AURA, auraSmallButtonStyle } from './aura-theme.js'
 
 /* ── Shared canvas plumbing ────────────────────────────────────────────── */
 
@@ -136,6 +139,73 @@ function gridLines(
 }
 
 /**
+ * Runs `draw` with a soft mint glow, then restores the context.
+ * `shadowBlur` is expensive, so it is used only for the one live
+ * trace per meter — never for grids, dots, or fills.
+ */
+function withGlow(
+  g: CanvasRenderingContext2D,
+  color: string,
+  blur: number,
+  draw: () => void,
+): void {
+  g.save()
+  g.shadowColor = color
+  g.shadowBlur = blur
+  draw()
+  g.restore()
+}
+
+/**
+ * Polar grid for the stereo scopes: three concentric rings, the
+ * cross axes, and the diagonal L/R guides. The scopes themselves
+ * draw their trace on top; the grid is deliberately faint so the
+ * live data stays the brightest thing on the card.
+ */
+function drawPolarGrid(
+  g: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  g.strokeStyle = AURA.grid
+  g.lineWidth = 1
+  g.beginPath()
+  for (const f of [1 / 3, 2 / 3, 1]) {
+    g.moveTo(cx + radius * f, cy)
+    g.arc(cx, cy, radius * f, 0, Math.PI * 2)
+  }
+  g.stroke()
+  g.strokeStyle = AURA.gridStrong
+  g.beginPath()
+  g.moveTo(cx, cy - radius)
+  g.lineTo(cx, cy + radius)
+  g.moveTo(cx - radius, cy)
+  g.lineTo(cx + radius, cy)
+  g.moveTo(cx - radius * 0.707, cy - radius * 0.707)
+  g.lineTo(cx + radius * 0.707, cy + radius * 0.707)
+  g.moveTo(cx + radius * 0.707, cy - radius * 0.707)
+  g.lineTo(cx - radius * 0.707, cy + radius * 0.707)
+  g.stroke()
+}
+
+/** Soft mint halo at a scope's centre, under the trace. */
+function drawCentreHalo(
+  g: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  const halo = g.createRadialGradient(cx, cy, 0, cx, cy, radius)
+  halo.addColorStop(0, 'rgba(127, 231, 196, 0.20)')
+  halo.addColorStop(1, 'rgba(127, 231, 196, 0)')
+  g.fillStyle = halo
+  g.beginPath()
+  g.arc(cx, cy, radius, 0, Math.PI * 2)
+  g.fill()
+}
+
+/**
  * One rAF loop per meter: pull a frame, draw it, repeat. The draw
  * function is read through a ref so control changes (palette, zoom)
  * never tear the loop down; per-meter state (waterfall, VU, loudness,
@@ -210,6 +280,7 @@ function MeterShell({
 
 function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
   const peakRef = useRef<Float32Array | null>(null)
+  const displayRef = useRef<Float32Array | null>(null)
   const ref = useMeterCanvas(
     source,
     (g, w, h, frame) => {
@@ -242,16 +313,23 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       if (!peakRef.current || peakRef.current.length !== frame.frequencyData.length) {
         peakRef.current = new Float32Array(frame.frequencyData.length)
       }
+      if (!displayRef.current || displayRef.current.length !== frame.frequencyData.length) {
+        displayRef.current = new Float32Array(frame.frequencyData.length)
+      }
       const peak = peakRef.current
+      const displayed = displayRef.current
       const [pr, pg, pb] = lutColor(lut, 255)
       // AURA fill: the mint gradient under the line, fading to the card.
+      // The line itself is display-smoothed (attack instant, release
+      // exponential); the peak line below still tracks the raw bytes.
       const points: Array<readonly [number, number]> = []
       for (let bin = 1; bin < frame.frequencyData.length; bin++) {
         const freq = bin * binHz
         if (freq < minFreq || freq > maxFreq) continue
         const value = frame.frequencyData[bin]!
         peak[bin] = Math.max(peak[bin]! - 0.5, value)
-        points.push([logX(freq), dbY(byteToDb(value))] as const)
+        displayed[bin] = smoothDisplayValue(displayed[bin]!, value)
+        points.push([logX(freq), dbY(byteToDb(displayed[bin]!))] as const)
       }
       if (points.length > 1) {
         const fill = g.createLinearGradient(0, 0, 0, h)
@@ -265,21 +343,23 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         g.closePath()
         g.fill()
       }
-      g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
-      g.lineWidth = 1.5
-      g.beginPath()
-      let started = false
-      for (const [x, y] of points) {
-        if (!started) {
-          g.moveTo(x, y)
-          started = true
-        } else g.lineTo(x, y)
-      }
-      g.stroke()
+      withGlow(g, 'rgba(127, 231, 196, 0.55)', 6, () => {
+        g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
+        g.lineWidth = 1.5
+        g.beginPath()
+        let started = false
+        for (const [x, y] of points) {
+          if (!started) {
+            g.moveTo(x, y)
+            started = true
+          } else g.lineTo(x, y)
+        }
+        g.stroke()
+      })
       g.strokeStyle = AURA.peakSoft
       g.lineWidth = 1
       g.beginPath()
-      started = false
+      let started = false
       for (let bin = 1; bin < frame.frequencyData.length; bin++) {
         const freq = bin * binHz
         if (freq < minFreq || freq > maxFreq) continue
@@ -301,6 +381,8 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
 /* ── 2. Spectrum Analyzer — log-spaced bars ───────────────────────────── */
 
 function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
+  const displayRef = useRef<Float32Array | null>(null)
+  const peakRef = useRef<Float32Array | null>(null)
   const ref = useMeterCanvas(
     source,
     (g, w, h, frame) => {
@@ -313,6 +395,7 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
       const fftSize = frame.frequencyData.length * 2
       const binHz = sr / fftSize
       const maxFreq = 20000 / Math.max(0.5, zoom)
+      const minFreq = 20
       const edges = logBandEdges(frame.frequencyData.length, 48)
       const bands = aggregateBands(frame.frequencyData, edges)
       const visible: Array<{ value: number; centreHz: number }> = []
@@ -321,19 +404,58 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
         const centreHz = Math.sqrt(start * binHz * end * binHz)
         if (centreHz <= maxFreq) visible.push({ value: bands[i]!, centreHz })
       }
+      if (!displayRef.current || displayRef.current.length !== visible.length) {
+        displayRef.current = new Float32Array(visible.length)
+      }
+      if (!peakRef.current || peakRef.current.length !== visible.length) {
+        peakRef.current = new Float32Array(visible.length)
+      }
+      const displayed = displayRef.current
+      const peak = peakRef.current
+      visible.forEach((band, i) => {
+        displayed[i] = smoothDisplayValue(displayed[i]!, band.value)
+        peak[i] = Math.max(peak[i]! - 0.01, band.value)
+      })
+      // Grid: log frequency verticals, dB horizontals (bar value is a
+      // 0..1 fraction of the −100…−30 dB byte range).
+      const logX = (freq: number) =>
+        ((Math.log(Math.max(minFreq, freq)) - Math.log(minFreq)) /
+          (Math.log(maxFreq) - Math.log(minFreq))) * w
+      const fracY = (frac: number) => h - 16 - frac * (h - 20)
+      gridLines(
+        g,
+        w,
+        h,
+        [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+          .filter((f) => f >= minFreq && f <= maxFreq)
+          .map(logX),
+        [(-60 + 100) / 70, (-30 + 100) / 70].map(fracY),
+      )
       const gap = 2
       const barWidth = Math.max(1, (w - (visible.length - 1) * gap) / Math.max(1, visible.length))
-      visible.forEach(({ value }, i) => {
+      visible.forEach((_band, i) => {
+        const value = displayed[i]!
         const barHeight = Math.max(value > 0 ? 2 : 0, value * (h - 20))
         if (barHeight <= 0) return
         const [r, gg, b] = lutColor(lut, value * 255)
-        g.fillStyle = `rgb(${r}, ${gg}, ${b})`
+        const grad = g.createLinearGradient(0, h - 16 - barHeight, 0, h - 16)
+        grad.addColorStop(0, `rgb(${r}, ${gg}, ${b})`)
+        grad.addColorStop(1, `rgba(${Math.round(r * 0.3)}, ${Math.round(gg * 0.3)}, ${Math.round(b * 0.3)}, 0.9)`)
+        g.fillStyle = grad
         g.fillRect(i * (barWidth + gap), h - 16 - barHeight, barWidth, barHeight)
+        // Peak-hold tick: warm, like the reference level meter's hot top.
+        const peakY = fracY(peak[i]!)
+        g.fillStyle = AURA.peak
+        g.fillRect(i * (barWidth + gap), peakY - 1, barWidth, 2)
       })
       g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
-      g.fillText('20', 2, h - 4)
-      g.fillText(formatHz(maxFreq), w - 28, h - 4)
+      for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+        if (f < minFreq || f > maxFreq) continue
+        g.fillText(formatHz(f), Math.min(w - 24, logX(f) + 2), h - 4)
+      }
+      g.fillText('-60', 2, fracY((-60 + 100) / 70) - 2)
+      g.fillText('-30', 2, fracY((-30 + 100) / 70) - 2)
     },
     [palette, zoom],
   )
@@ -344,6 +466,7 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
 
 function OctaveAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
   const [fraction, setFraction] = useState<1 | 3>(1)
+  const displayRef = useRef<Float32Array | null>(null)
   const ref = useMeterCanvas(
     source,
     (g, w, h, frame) => {
@@ -365,13 +488,24 @@ function OctaveAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement
         return
       }
       const values = aggregateOctaveBands(frame.frequencyData, shown)
+      if (!displayRef.current || displayRef.current.length !== shown.length) {
+        displayRef.current = new Float32Array(shown.length)
+      }
+      const displayed = displayRef.current
+      shown.forEach((_band, i) => {
+        displayed[i] = smoothDisplayValue(displayed[i]!, values[i]!)
+      })
       const gap = 3
       const barWidth = Math.max(1, (w - (shown.length - 1) * gap) / shown.length)
-      shown.forEach((band, i) => {
-        const value = values[i]!
+      gridLines(g, w, h, [], [h - 28 - (h - 32) * 0.25, h - 28 - (h - 32) * 0.5, h - 28 - (h - 32) * 0.75])
+      shown.forEach((_band, i) => {
+        const value = displayed[i]!
         const barHeight = Math.max(value > 0 ? 2 : 0, value * (h - 32))
         const [r, gg, b] = lutColor(lut, value * 255)
-        g.fillStyle = `rgb(${r}, ${gg}, ${b})`
+        const grad = g.createLinearGradient(0, h - 28 - barHeight, 0, h - 28)
+        grad.addColorStop(0, `rgb(${r}, ${gg}, ${b})`)
+        grad.addColorStop(1, `rgba(${Math.round(r * 0.3)}, ${Math.round(gg * 0.3)}, ${Math.round(b * 0.3)}, 0.9)`)
+        g.fillStyle = grad
         g.fillRect(i * (barWidth + gap), h - 28 - barHeight, barWidth, barHeight)
       })
       g.fillStyle = AURA.muted
@@ -386,21 +520,22 @@ function OctaveAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement
     },
     [palette, zoom, fraction],
   )
+  const toggleStyle = (active: boolean): CSSProperties => ({
+    ...auraSmallButtonStyle,
+    fontWeight: active ? 700 : 400,
+    background: active ? AURA.accentFaint : auraSmallButtonStyle.background,
+    color: active ? AURA.accent : auraSmallButtonStyle.color,
+    borderColor: active ? 'rgba(127, 231, 196, 0.45)' : auraSmallButtonStyle.borderColor,
+  })
   return (
     <MeterShell
       canvasRef={ref}
       children={
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
-          <button
-            onClick={() => setFraction(1)}
-            style={{ cursor: 'pointer', fontWeight: fraction === 1 ? 700 : 400 }}
-          >
+          <button onClick={() => setFraction(1)} style={toggleStyle(fraction === 1)}>
             1/1 octave
           </button>
-          <button
-            onClick={() => setFraction(3)}
-            style={{ cursor: 'pointer', fontWeight: fraction === 3 ? 700 : 400 }}
-          >
+          <button onClick={() => setFraction(3)} style={toggleStyle(fraction === 3)}>
             1/3 octave
           </button>
         </div>
@@ -441,21 +576,28 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
       const visibleMs = (traces[0]!.samples.length / Math.max(0.5, zoom) / sr) * 1000
       for (const trace of traces) {
         const count = Math.max(2, Math.floor(trace.samples.length / Math.max(0.5, zoom)))
-        g.strokeStyle = trace.color
-        g.lineWidth = 1.5
-        g.beginPath()
-        for (let i = 0; i < count; i++) {
-          const x = (i / (count - 1)) * w
-          const y = midY - trace.samples[i]! * (h / 2 - 4)
-          if (i === 0) g.moveTo(x, y)
-          else g.lineTo(x, y)
-        }
-        g.stroke()
+        withGlow(g, trace.color, 6, () => {
+          g.strokeStyle = trace.color
+          g.lineWidth = 1.5
+          g.beginPath()
+          for (let i = 0; i < count; i++) {
+            const x = (i / (count - 1)) * w
+            const y = midY - trace.samples[i]! * (h / 2 - 4)
+            if (i === 0) g.moveTo(x, y)
+            else g.lineTo(x, y)
+          }
+          g.stroke()
+        })
       }
       g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       g.fillText(traces.map((t) => t.label).join(' / '), 4, 12)
-      g.fillText(`${visibleMs.toFixed(1)} ms window${assumed ? ' · 48 kHz assumed' : ''}`, 4, h - 4)
+      // Time axis: 0 at the left edge, half and full window at the
+      // quarter gridlines already drawn above.
+      g.fillText('0', 4, h - 4)
+      g.fillText(`${(visibleMs / 2).toFixed(1)} ms`, w / 2 - 18, h - 4)
+      g.fillText(`${visibleMs.toFixed(1)} ms`, w - 52, h - 4)
+      if (assumed) drawNote(g, w, h, '48 kHz assumed')
     },
     [zoom],
   )
@@ -475,7 +617,7 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
         drawPlaceholder(g, w, h, ['No live audio frame'])
         return
       }
-      const { assumed } = sampleRateOf(frame)
+      const { hz: sr, assumed } = sampleRateOf(frame)
       const stereo = frame.channels === 2 && frame.left && frame.right
       if (stereo) {
         leftHistory.current.pushBytes(frame.left!.timeDomainData)
@@ -492,24 +634,36 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
         g.moveTo(0, midY)
         g.lineTo(w, midY)
         g.stroke()
-        g.strokeStyle = color
-        g.lineWidth = 1.2
-        g.beginPath()
-        for (let i = 0; i < slice.length; i++) {
-          const x = (i / (slice.length - 1)) * w
-          const y = midY - slice[i]! * (height / 2 - 2)
-          if (i === 0) g.moveTo(x, y)
-          else g.lineTo(x, y)
-        }
-        g.stroke()
+        withGlow(g, color, 5, () => {
+          g.strokeStyle = color
+          g.lineWidth = 1.2
+          g.beginPath()
+          for (let i = 0; i < slice.length; i++) {
+            const x = (i / (slice.length - 1)) * w
+            const y = midY - slice[i]! * (height / 2 - 2)
+            if (i === 0) g.moveTo(x, y)
+            else g.lineTo(x, y)
+          }
+          g.stroke()
+        })
+        return slice.length
       }
+      let shownSamples = 0
       if (stereo) {
-        drawTrace(leftHistory.current.snapshot(), 0, h / 2, AURA.leftTrace)
+        shownSamples = drawTrace(leftHistory.current.snapshot(), 0, h / 2, AURA.leftTrace)
         drawTrace(rightHistory.current.snapshot(), h / 2, h / 2, AURA.rightTrace)
       } else {
-        drawTrace(monoHistory.current.snapshot(), 0, h, AURA.leftTrace)
+        shownSamples = drawTrace(monoHistory.current.snapshot(), 0, h, AURA.leftTrace)
       }
-      drawNote(g, w, h, `frame-stitched history${assumed ? ' · 48 kHz assumed' : ''}`)
+      // The history window in seconds: the ring holds 48000 samples
+      // (1 s at 48 kHz), so the window is the filled length, not a
+      // fixed label. See audio-frame.ts for why this stays approximate.
+      drawNote(
+        g,
+        w,
+        h,
+        `frame-stitched · ${(shownSamples / sr).toFixed(1)} s${assumed ? ' · 48 kHz assumed' : ''}`,
+      )
     },
     [zoom],
   )
@@ -521,13 +675,23 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
 const SPECTROGRAM_ROWS = 64
 const SPECTROGRAM_COLUMNS = 240
 
+const heatLut = buildPaletteLut(HEAT_STOPS)
+
 function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
   const waterfallRef = useRef<WaterfallBuffer | null>(null)
   const stripRef = useRef<HTMLCanvasElement | null>(null)
+  // Push timestamps, oldest → newest, parallel to the waterfall
+  // columns: the time axis is drawn from real elapsed time, not from
+  // an assumed frame rate (60 Hz panels and 120 Hz panels would
+  // otherwise label the same strip with different windows).
+  const timeRef = useRef<number[]>([])
   const ref = useMeterCanvas(
     source,
     (g, w, h, frame) => {
-      const lut = lutFor(palette)
+      // Heat scale by design (see HEAT_STOPS); the workspace palette
+      // still drives the other meters.
+      void palette
+      const lut = heatLut
       if (!frame || frame.frequencyData.length === 0) {
         drawPlaceholder(g, w, h, ['No live audio frame'])
         return
@@ -540,6 +704,9 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       }
       const waterfall = waterfallRef.current
       waterfall.push(resampleToLogRows(frame.frequencyData, SPECTROGRAM_ROWS))
+      const times = timeRef.current
+      times.push(typeof performance !== 'undefined' ? performance.now() : Date.now())
+      while (times.length > SPECTROGRAM_COLUMNS) times.shift()
       if (!stripRef.current && typeof document !== 'undefined') {
         stripRef.current = document.createElement('canvas')
       }
@@ -578,10 +745,32 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       stripCtx.putImageData(image, 0, 0)
       g.imageSmoothingEnabled = true
       g.drawImage(strip, 0, 0, w, h)
+      // Frequency axis (left edge) and time axis (bottom edge, newest
+      // at the right). Time ticks land on whole-second boundaries of
+      // the real push history; the leftmost column's age is labelled
+      // only when at least a second has actually elapsed.
       g.fillStyle = AURA.text
       g.font = '10px sans-serif'
       g.fillText('20 Hz', 2, h - 4)
       g.fillText(formatHz(maxFreq), 2, 12)
+      const stamps = timeRef.current
+      if (stamps.length > 1) {
+        const newest = stamps[stamps.length - 1]!
+        const firstX = SPECTROGRAM_COLUMNS - stamps.length
+        let lastWhole = -1
+        g.fillStyle = AURA.muted
+        g.textAlign = 'center'
+        for (let i = 0; i < stamps.length; i++) {
+          const ageSec = Math.floor((newest - stamps[i]!) / 1000)
+          if (ageSec === lastWhole || ageSec === 0) continue
+          lastWhole = ageSec
+          const x = ((firstX + i) / SPECTROGRAM_COLUMNS) * w
+          if (x < 60 || x > w - 20) continue
+          g.fillText(`-${ageSec}s`, x, h - 4)
+        }
+        g.fillText('now', w - 16, h - 4)
+        g.textAlign = 'left'
+      }
     },
     [palette, zoom],
   )
@@ -609,31 +798,23 @@ function XyScope({ source }: MeterProps): ReactElement {
       const cx = w / 2
       const cy = h / 2
       const radius = Math.min(w, h) / 2 - 14
-      gridLines(g, w, h, [cx], [cy])
-      g.strokeStyle = AURA.gridStrong
-      g.beginPath()
-      g.arc(cx, cy, radius, 0, Math.PI * 2)
-      g.stroke()
-      // Diagonal guides: L axis and R axis of a goniometer.
-      g.beginPath()
-      g.moveTo(cx - radius * 0.707, cy - radius * 0.707)
-      g.lineTo(cx + radius * 0.707, cy + radius * 0.707)
-      g.moveTo(cx + radius * 0.707, cy - radius * 0.707)
-      g.lineTo(cx - radius * 0.707, cy + radius * 0.707)
-      g.stroke()
+      drawPolarGrid(g, cx, cy, radius)
+      drawCentreHalo(g, cx, cy, radius * 0.45)
       const n = Math.min(left.length, right.length)
-      g.strokeStyle = AURA.accent
-      g.lineWidth = 1.2
-      g.beginPath()
-      for (let i = 0; i < n; i++) {
-        const l = left[i]!
-        const r = right[i]!
-        const x = cx + (l - r) * 0.707 * radius
-        const y = cy - (l + r) * 0.707 * radius
-        if (i === 0) g.moveTo(x, y)
-        else g.lineTo(x, y)
-      }
-      g.stroke()
+      withGlow(g, 'rgba(127, 231, 196, 0.6)', 6, () => {
+        g.strokeStyle = AURA.accent
+        g.lineWidth = 1.2
+        g.beginPath()
+        for (let i = 0; i < n; i++) {
+          const l = left[i]!
+          const r = right[i]!
+          const x = cx + (l - r) * 0.707 * radius
+          const y = cy - (l + r) * 0.707 * radius
+          if (i === 0) g.moveTo(x, y)
+          else g.lineTo(x, y)
+        }
+        g.stroke()
+      })
       g.fillStyle = AURA.muted
       g.font = '11px sans-serif'
       g.fillText(`corr ${levels.correlation.toFixed(2)}  width ${(levels.width * 100).toFixed(0)}%`, 4, 14)
@@ -661,13 +842,21 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
       const levels = computeStereoLevels(left, right)
       leftVu.current = stepVu(leftVu.current, levels.leftRmsDb, levels.leftPeakDb)
       rightVu.current = stepVu(rightVu.current, levels.rightRmsDb, levels.rightPeakDb)
+      void lut
+      // Zone gradient over the full track height, so colours mean
+      // absolute level (green → cyan → yellow → hot orange at the
+      // top), not the height of the current bar.
+      const zoneGrad = g.createLinearGradient(0, h - 16, 0, 16)
+      zoneGrad.addColorStop(0, '#2fbf71')
+      zoneGrad.addColorStop(0.6, '#5eead4')
+      zoneGrad.addColorStop(0.82, '#facc15')
+      zoneGrad.addColorStop(1, '#ff9a5c')
       const drawBar = (x: number, barW: number, vu: VuState, label: string) => {
         g.fillStyle = AURA.track
         g.fillRect(x, 16, barW, h - 32)
         const frac = dbToFraction(vu.levelDb)
         if (frac > 0) {
-          const [r, gg, b] = lutColor(lut, frac * 255)
-          g.fillStyle = `rgb(${r}, ${gg}, ${b})`
+          g.fillStyle = zoneGrad
           g.fillRect(x, 16 + (1 - frac) * (h - 32), barW, frac * (h - 32))
         }
         const peakY = 16 + (1 - dbToFraction(vu.peakDb)) * (h - 32)
@@ -675,15 +864,15 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
         g.fillRect(x - 2, peakY - 1, barW + 4, 2)
         g.fillStyle = AURA.muted
         g.font = '11px sans-serif'
-        g.fillText(label, x, h - 4)
-        g.fillText(`${vu.levelDb <= DB_FLOOR ? '-∞' : vu.levelDb.toFixed(1)} dB`, x, 12)
+        g.fillText(`${label}  ${vu.levelDb <= DB_FLOOR ? '-∞' : vu.levelDb.toFixed(1)} dB RMS`, x, h - 4)
+        g.fillText(`PK ${vu.peakDb <= DB_FLOOR ? '-∞' : vu.peakDb.toFixed(1)}`, x, 12)
       }
       const barW = Math.max(16, (w - 60) / 2)
       drawBar(20, barW, leftVu.current, 'L')
       drawBar(40 + barW, barW, rightVu.current, 'R')
       g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
-      for (const db of [-60, -30, 0]) {
+      for (const db of [-60, -30, -12, 0]) {
         g.fillText(`${db}`, w - 22, 16 + (1 - dbToFraction(db)) * (h - 32) + 3)
       }
     },
@@ -725,8 +914,22 @@ function Loudness({ source }: MeterProps): ReactElement {
       g.fillText(`Short-term  ${fmt(state.shortTermLu)} LUFS`, 8, 72)
       g.fillText(`Momentary  ${fmt(state.momentaryLu)} LUFS`, 8, 88)
       g.fillText(`LRA (windowed)  ${state.lraLu.toFixed(1)} LU`, 8, 104)
+      // Loudness-range bar: the [p10, p95] span of the same short-term
+      // history whose spread is LRA, on a −70…0 LUFS track, with a
+      // white tick at the integrated value. Same data as the LRA
+      // number above — a second view of it, not a second calculation.
+      const range = loudnessRange(state.shortHistory)
+      const luX = (lu: number) => 8 + ((lu + 70) / 70) * (w - 16)
+      g.fillStyle = AURA.track
+      g.fillRect(8, 110, w - 16, 6)
+      if (range) {
+        g.fillStyle = AURA.accentSoft
+        g.fillRect(luX(range.p10), 110, Math.max(1, luX(range.p95) - luX(range.p10)), 6)
+      }
+      g.fillStyle = AURA.text
+      g.fillRect(luX(Math.max(-70, Math.min(0, state.integratedLu))) - 1, 108, 2, 10)
       // Short-term history trace.
-      const traceTop = 118
+      const traceTop = 126
       const traceH = Math.max(20, h - traceTop - 28)
       gridLines(g, w, h, [], [traceTop + traceH / 2])
       g.strokeStyle = AURA.accent
@@ -763,20 +966,14 @@ function StereoField({ source }: MeterProps): ReactElement {
       const cx = w / 2
       const cy = (h - 30) / 2 + 10
       const radius = Math.min(w, h - 30) / 2 - 10
-      g.strokeStyle = AURA.gridStrong
-      g.beginPath()
-      g.arc(cx, cy, radius, 0, Math.PI * 2)
-      g.stroke()
-      g.beginPath()
-      g.moveTo(cx, cy - radius)
-      g.lineTo(cx, cy + radius)
-      g.moveTo(cx - radius, cy)
-      g.lineTo(cx + radius, cy)
-      g.stroke()
+      drawPolarGrid(g, cx, cy, radius)
+      drawCentreHalo(g, cx, cy, radius * 0.45)
       // Mid vertical, side horizontal: mono = vertical line, out of
       // phase = horizontal line. Dots, not a polyline: the field is a
       // cloud, and connecting samples in time order would draw chords
-      // the field does not contain.
+      // the field does not contain. No shadowBlur here — hundreds of
+      // glowing dots would cost frames; the halo above carries the
+      // glow for this meter.
       g.fillStyle = AURA.accentSoft
       const n = Math.min(left.length, right.length)
       for (let i = 0; i < n; i++) {
@@ -786,10 +983,113 @@ function StereoField({ source }: MeterProps): ReactElement {
         const y = cy - ((l + r) / 2) * radius * 1.414
         g.fillRect(x, y, 1.5, 1.5)
       }
+      const peakDb = Math.max(levels.leftPeakDb, levels.rightPeakDb)
       g.fillStyle = AURA.muted
       g.font = '11px sans-serif'
-      g.fillText(`width ${(levels.width * 100).toFixed(0)}%  corr ${levels.correlation.toFixed(2)}`, 4, 14)
-      g.fillText('mid ↑  side →', 4, h - 4)
+      g.fillText(
+        `width ${(levels.width * 100).toFixed(0)}%  corr ${levels.correlation.toFixed(2)}  peak ${peakDb <= DB_FLOOR ? '-∞' : peakDb.toFixed(1)} dB`,
+        4,
+        14,
+      )
+      g.fillText('L', 4, h - 4)
+      g.fillText('R', w - 12, h - 4)
+      g.fillText('mid ↑  side →', w / 2 - 30, h - 4)
+    },
+    [],
+  )
+  return <MeterShell canvasRef={ref} />
+}
+
+/* ── 11. Phase Correlation — correlation history (stereo only) ────────── */
+
+/**
+ * Correlation over time, drawn the way the reference figure does:
+ * correlation on the horizontal axis (−1 left, 0 centre, +1 right),
+ * time running vertically with the newest sample at the bottom, so
+ * the trace drifts left and right as the stereo image changes. The
+ * negative half is tinted warm as a visual warning; a current negative
+ * value also gets an explicit label. Values come from the same
+ * `computeStereoLevels` the XY scope and stereo field use — one
+ * definition, three views.
+ */
+const PHASE_HISTORY_MAX = 160
+
+function PhaseCorrelation({ source }: MeterProps): ReactElement {
+  const historyRef = useRef<number[]>([])
+  const ref = useMeterCanvas(
+    source,
+    (g, w, h, frame) => {
+      if (!frame || frame.channels !== 2 || !frame.left || !frame.right) {
+        drawPlaceholder(g, w, h, STEREO_PLACEHOLDER)
+        return
+      }
+      const left = samplesFromBytes(frame.left.timeDomainData)
+      const right = samplesFromBytes(frame.right.timeDomainData)
+      const { correlation } = computeStereoLevels(left, right)
+      const history = historyRef.current
+      history.push(correlation)
+      while (history.length > PHASE_HISTORY_MAX) history.shift()
+
+      const top = 24
+      const bottom = h - 16
+      const corrX = (corr: number) => ((corr + 1) / 2) * w
+      // Negative half: warm warning tint; positive half stays neutral.
+      g.fillStyle = 'rgba(255, 154, 92, 0.07)'
+      g.fillRect(0, top, w / 2, bottom - top)
+      // Grid: ±1 edges, ±0.5 faint, 0 strong.
+      g.strokeStyle = AURA.grid
+      g.lineWidth = 1
+      g.beginPath()
+      for (const c of [-0.5, 0.5]) {
+        g.moveTo(corrX(c), top)
+        g.lineTo(corrX(c), bottom)
+      }
+      g.stroke()
+      g.strokeStyle = AURA.gridStrong
+      g.beginPath()
+      g.moveTo(corrX(0), top)
+      g.lineTo(corrX(0), bottom)
+      g.stroke()
+      // History trace, oldest at the top, newest at the bottom.
+      const n = history.length
+      withGlow(g, 'rgba(127, 231, 196, 0.55)', 6, () => {
+        g.strokeStyle = AURA.accent
+        g.lineWidth = 1.5
+        g.beginPath()
+        for (let i = 0; i < n; i++) {
+          const x = corrX(history[i]!)
+          const y = n <= 1 ? bottom : top + (i / (n - 1)) * (bottom - top)
+          if (i === 0) g.moveTo(x, y)
+          else g.lineTo(x, y)
+        }
+        g.stroke()
+      })
+      // Newest point: bright dot with a halo.
+      if (n > 0) {
+        const x = corrX(history[n - 1]!)
+        drawCentreHalo(g, x, bottom, 10)
+        g.fillStyle = AURA.accent
+        g.beginPath()
+        g.arc(x, bottom, 3, 0, Math.PI * 2)
+        g.fill()
+      }
+      g.fillStyle = AURA.text
+      g.font = '700 16px sans-serif'
+      g.textAlign = 'right'
+      g.fillText(correlation.toFixed(2), w - 4, 18)
+      g.textAlign = 'left'
+      g.fillStyle = AURA.muted
+      g.font = '11px sans-serif'
+      g.fillText('Correlation', 4, 18)
+      if (correlation < 0) {
+        g.fillStyle = AURA.peak
+        g.fillText('负相关警告', 4, top + 14)
+      }
+      g.fillStyle = AURA.muted
+      g.font = '10px sans-serif'
+      g.fillText('-1', 2, h - 4)
+      g.fillText('0', w / 2 - 3, h - 4)
+      g.fillText('+1', w - 16, h - 4)
     },
     [],
   )
@@ -825,5 +1125,7 @@ export function MeterCanvas({
       return <Loudness source={source} palette={palette} zoom={zoom} />
     case 'stereo-field':
       return <StereoField source={source} palette={palette} zoom={zoom} />
+    case 'phase-correlation':
+      return <PhaseCorrelation source={source} palette={palette} zoom={zoom} />
   }
 }

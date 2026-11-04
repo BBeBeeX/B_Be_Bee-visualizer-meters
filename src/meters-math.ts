@@ -17,6 +17,23 @@ export const DB_FLOOR = -60
 const clamp = (value: number, lo: number, hi: number): number =>
   Math.min(hi, Math.max(lo, value))
 
+/* ── Display-only smoothing ─────────────────────────────────────────────── */
+
+/**
+ * One frame of display smoothing for a drawn value (bar height, spectrum
+ * line): instant attack so a transient is never missed, exponential
+ * release so the drawing settles instead of flickering. This is purely
+ * presentational — it never feeds a calculation, a readout, or a state
+ * machine; every number the meters report still comes from the raw
+ * frame. `release` is the fraction of the remaining gap closed per
+ * frame (0.3 ≈ settles in ~10 frames at 60 fps).
+ */
+export function smoothDisplayValue(prev: number, value: number, release = 0.3): number {
+  if (!Number.isFinite(prev)) return value
+  if (!Number.isFinite(value)) return prev
+  return value >= prev ? value : prev + (value - prev) * release
+}
+
 /* ── Time-domain levels ─────────────────────────────────────────────────── */
 
 /** Converts one time-domain byte to a float sample in [-1, ~1). */
@@ -273,6 +290,20 @@ export const PALETTE_STOPS: Record<string, readonly RgbStop[]> = {
     [210, 255, 235],
   ],
 }
+
+/**
+ * Heat scale for the spectrogram only: deep blue → teal → mint → yellow.
+ * The spectrogram is a heat visualization by design (the reference
+ * waterfall reads hot at the top of the scale), so it does not follow
+ * the workspace palette — the other meters do. Same stop shape as
+ * PALETTE_STOPS, so it builds through {@link buildPaletteLut}.
+ */
+export const HEAT_STOPS: readonly RgbStop[] = [
+  [8, 16, 40],
+  [16, 80, 110],
+  [94, 234, 200],
+  [255, 224, 120],
+]
 
 /** Builds a 256×3 RGB lookup table by interpolating the given stops. */
 export function buildPaletteLut(stops: readonly RgbStop[]): Uint8Array {
@@ -617,3 +648,19 @@ export function stepLoudness(
   }
 }
 
+/**
+ * The two ends of the windowed loudness range: the 10th and 95th
+ * percentiles of the short-term history — the same pair whose spread
+ * is `lraLu`. The loudness card draws them as a range bar; the state
+ * machine itself keeps only the spread, so this reads the history
+ * directly. Returns nulls when the history is too short to mean
+ * anything (fewer than 10 entries, same threshold as `lraLu`).
+ */
+export function loudnessRange(shortHistory: readonly number[]): {
+  p10: number
+  p95: number
+} | null {
+  if (shortHistory.length < 10) return null
+  const sorted = [...shortHistory].sort((a, b) => a - b)
+  return { p10: percentile(sorted, 0.1), p95: percentile(sorted, 0.95) }
+}

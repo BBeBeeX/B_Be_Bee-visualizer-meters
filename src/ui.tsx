@@ -47,6 +47,7 @@ import {
 } from './config.js'
 import { createVisualizerFrameSource } from './audio-frame.js'
 import type { FrameSource } from './audio-frame.js'
+import { DashboardPage } from './dashboard.js'
 import { serviceOf } from './service-of.js'
 import { MeterCanvas } from './meters.js'
 import {
@@ -588,7 +589,7 @@ export const name = 'bbebee-plugin-visualizer-meters-ui'
 
 export const inject: readonly string[] = ['ui']
 
-function bound<P extends { ctx: PluginContextLike }>(
+function bound<P extends { ctx: object }>(
   ctx: PluginContextLike,
   Screen: (props: P) => ReactElement | null,
 ): (props: Omit<P, 'ctx'>) => ReactElement | null {
@@ -610,6 +611,18 @@ export async function apply(ctx: PluginContextLike) {
       icon: 'wave-sine',
       placement: ['tray'],
       order: 60,
+    })
+    // Studio dashboard: same workspace storage as the page above, so
+    // layouts are shared between the two views; only the shell differs.
+    yield ctx.ui.registerView('visualizer-meters.dashboard', bound(ctx, DashboardPage))
+    yield ctx.ui.contribute({
+      kind: 'route',
+      id: 'visualizer-meters.dashboard',
+      path: '/visualizer-meters/studio',
+      title: 'Meters Studio',
+      icon: 'wave-sine',
+      placement: ['tray'],
+      order: 61,
     })
   }, 'visualizer-meters-ui')
 }

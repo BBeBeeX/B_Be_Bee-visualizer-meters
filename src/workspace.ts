@@ -15,15 +15,17 @@
  * composition" is exactly this: pick any meters, put them anywhere, save
  * the arrangement, restore it later.
  *
- * ## The ten meters
+ * ## The eleven meters
  *
  * The two reference UIs collapse to ten distinct components (the
- * spectrogram appears in both figures, counted once):
+ * spectrogram appears in both figures, counted once), plus the phase
+ * correlation history the studio dashboard adds:
  *
  * - SignalScope XM (figure 2): FFT Analyzer, Oscilloscope, Octave
  *   Analyzer, Spectrogram, XY Scope.
  * - AURA (figure 1): Spectrum Analyzer, Waveform, Stereo Level Meter,
  *   Loudness Meter, Stereo Field, Spectrogram (again).
+ * - Studio dashboard: Phase Correlation (correlation history).
  *
  * "FFT Analyzer" and "Spectrum Analyzer" are deliberately separate
  * components sharing one frame source: the FFT analyzer draws the
@@ -59,6 +61,7 @@ export type MeterKind =
   | 'stereo-level'
   | 'loudness'
   | 'stereo-field'
+  | 'phase-correlation'
 
 export const METER_KINDS: readonly MeterKind[] = [
   'fft-analyzer',
@@ -71,6 +74,7 @@ export const METER_KINDS: readonly MeterKind[] = [
   'stereo-level',
   'loudness',
   'stereo-field',
+  'phase-correlation',
 ]
 
 export interface MeterMeta {
@@ -123,6 +127,10 @@ export const METER_META: Record<MeterKind, MeterMeta> = {
   'stereo-field': {
     title: 'Stereo Field', titleZh: '声场', needsStereo: true, hasZoom: false,
     description: 'Goniometer: mid vertical, side horizontal, plus width and correlation.',
+  },
+  'phase-correlation': {
+    title: 'Phase Correlation', titleZh: '相位相关', needsStereo: true, hasZoom: false,
+    description: 'Correlation history: −1…+1 on the horizontal axis, 0 at centre, newest at the bottom.',
   },
 }
 
@@ -363,6 +371,38 @@ export const WORKSPACE_PRESETS: Record<
 
 export function defaultWorkspace(): Workspace {
   return WORKSPACE_PRESETS.studio!.build('aura')
+}
+
+/**
+ * The Studio dashboard's default arrangement: the reference figure's
+ * rows on the free canvas — spectrum + loudness, then field +
+ * waveform + level, then spectrogram + phase correlation, then the
+ * remaining four meters. Deliberately not a `WORKSPACE_PRESETS` entry:
+ * the workspace page enumerates presets as buttons, and this layout
+ * belongs to the dashboard view only. Panels stay free-positioned, so
+ * dragging/resizing in the dashboard still works; this is just the
+ * starting arrangement, not a tiling constraint.
+ */
+export function studioDashboardWorkspace(palette: Workspace['palette'] = 'aura'): Workspace {
+  return {
+    version: 1,
+    name: 'Studio',
+    palette,
+    snap: true,
+    panels: [
+      panelAt('spectrum-analyzer', 20, 20, 760, 300),
+      panelAt('loudness', 800, 20, 380, 300),
+      panelAt('stereo-field', 20, 340, 380, 300),
+      panelAt('waveform', 420, 340, 380, 300),
+      panelAt('stereo-level', 820, 340, 360, 300),
+      panelAt('spectrogram', 20, 660, 580, 300),
+      panelAt('phase-correlation', 620, 660, 560, 300),
+      panelAt('fft-analyzer', 20, 980, 380, 280),
+      panelAt('oscilloscope', 420, 980, 380, 280),
+      panelAt('octave-analyzer', 820, 980, 360, 280),
+      panelAt('xy-scope', 20, 1280, 380, 280),
+    ],
+  }
 }
 
 /* ── Storage: host store → localStorage → memory ──────────────────────── */

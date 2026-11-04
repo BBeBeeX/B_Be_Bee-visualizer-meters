@@ -104,10 +104,10 @@ export interface AudioFrame {
 export interface FrameSource {
   /**
    * 2 when the attached visualizer reports stereo and the stereo
-   * methods exist; otherwise 1. Read per pull, not once, because the
-   * analyser can switch (engine attach, track change) mid-session.
-   * The getter below is therefore per-frame; this field is the
-   * initial value only.
+   * methods exist; otherwise 1. Live getters, not creation-time
+   * snapshots: the analyser can switch (engine attach, track change)
+   * mid-session, so the dashboard header reads the current value on
+   * each render instead of the value from when the source was built.
    */
   readonly channels: 1 | 2
   readonly sampleRateHz?: number
@@ -147,9 +147,18 @@ export function createVisualizerFrameSource(
   let leftTime = new Uint8Array(0)
   let rightFreq = new Uint8Array(0)
   let rightTime = new Uint8Array(0)
+  // Live readouts for the header: updated by every pull, so a render
+  // after playback starts sees stereo / the real rate, not the
+  // creation-time values (the analyser may attach after this source).
+  let lastChannels: 1 | 2 = 1
+  let lastRate: number | undefined = visualizer.sampleRateHz
   return {
-    channels: 1,
-    sampleRateHz: visualizer.sampleRateHz,
+    get channels(): 1 | 2 {
+      return lastChannels
+    },
+    get sampleRateHz(): number | undefined {
+      return visualizer.sampleRateHz ?? lastRate
+    },
     available: true,
     pull: (): AudioFrame => {
       const target = clampFftSize(visualizer.settings?.fftSize ?? 128)
@@ -179,12 +188,15 @@ export function createVisualizerFrameSource(
         frequencyData: freq.slice(),
         timeDomainData: time.slice(),
       }
+      lastChannels = 1
+      lastRate = visualizer.sampleRateHz ?? lastRate
       if (stereo) {
         visualizer.getLeftFrequencyData!(leftFreq)
         visualizer.getLeftTimeDomainData!(leftTime)
         visualizer.getRightFrequencyData!(rightFreq)
         visualizer.getRightTimeDomainData!(rightTime)
         frame.channels = 2
+        lastChannels = 2
         frame.left = { frequencyData: leftFreq.slice(), timeDomainData: leftTime.slice() }
         frame.right = { frequencyData: rightFreq.slice(), timeDomainData: rightTime.slice() }
       }

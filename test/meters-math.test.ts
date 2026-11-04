@@ -27,6 +27,9 @@ import {
   levelToDb,
   logBandEdges,
   lutColor,
+  HEAT_STOPS,
+  loudnessRange,
+  smoothDisplayValue,
   stepVu,
 } from '../src/meters-math.ts'
 
@@ -211,4 +214,32 @@ test('resolveMetersConfig validates per-field with default fallbacks', () => {
   })
   // The result is a fresh object, never the shared defaults.
   assert.notEqual(resolveMetersConfig(undefined), DEFAULT_METERS_CONFIG)
+})
+
+test('smoothDisplayValue attacks instantly and releases exponentially', () => {
+  // Rising edge passes through untouched: a transient is never missed.
+  assert.equal(smoothDisplayValue(40, 100), 100)
+  // Falling edge closes 30% of the gap per frame by default.
+  assert.equal(smoothDisplayValue(100, 40), 82)
+  assert.equal(smoothDisplayValue(100, 40, 0.5), 70)
+  // Non-finite input is passed through, never propagated as NaN.
+  assert.equal(smoothDisplayValue(Number.NaN, 50), 50)
+  assert.equal(smoothDisplayValue(50, Number.NaN), 50)
+})
+
+test('loudnessRange returns the p10/p95 ends of the short-term history', () => {
+  assert.equal(loudnessRange([1, 2, 3]), null)
+  assert.deepEqual(loudnessRange([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), {
+    p10: 2,
+    p95: 12,
+  })
+})
+
+test('HEAT_STOPS runs deep blue to yellow for the spectrogram', () => {
+  const heat = buildPaletteLut(HEAT_STOPS)
+  assert.deepEqual(lutColor(heat, 0), [8, 16, 40])
+  assert.deepEqual(lutColor(heat, 255), [255, 224, 120])
+  const mid = lutColor(heat, 128)
+  // Midpoint sits in the teal-to-mint segment: green-dominant, not hot.
+  assert.ok(mid[1] > mid[0] && mid[1] > mid[2], 'heat midpoint is teal/mint')
 })
