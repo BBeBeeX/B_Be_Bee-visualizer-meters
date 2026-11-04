@@ -194,49 +194,51 @@ The page is a free canvas of panels, not a fixed grid:
 Meters never touch the `visualizer` service directly. They consume an
 `AudioFrame` through a `FrameSource`:
 
-- `frequencyData` / `timeDomainData`: the mono mix (or channel 0), in
-  AnalyserNode byte conventions.
-- `left` / `right`: per-channel byte data — **absent today**, and the
-  interface says so instead of faking it.
-- `sampleRateHz`: **absent today**. Meters that need it (octave bands,
-  oscilloscope milliseconds) assume 48 kHz and label the assumption on
-  the panel.
+- `frequencyData` / `timeDomainData`: the mono mix, in AnalyserNode
+  byte conventions.
+- `left` / `right`: per-channel byte data, present only when
+  `channels === 2` — i.e. on the desktop engine chain (below).
+- `sampleRateHz`: present when the host chain reports it; otherwise
+  meters that need it (octave bands, oscilloscope milliseconds)
+  assume 48 kHz and label the assumption on the panel.
 
-The only adapter that exists today,
-`createVisualizerFrameSource`, wraps the existing mono service. When a
-stereo source exists it implements the same interface and no meter
-changes.
+`createVisualizerFrameSource` wraps the `visualizer` service and
+reads its stereo report per pull: a stereo frame requires
+`channels === 2` *and* all four stereo methods, mirroring the
+analyser's own package rule. Anything less is mono, and the stereo
+meters keep their placeholder.
 
-## Stereo data: what audio-engine must change
+## Stereo data: the chain that now exists (desktop only)
 
-**Yes, audio-engine must change for true stereo meters — but not for
-anything in this change.** The chain today is mono end to end, and no
-meters-side code can recover what was discarded upstream:
+The chain that was mono end to end now carries stereo on desktop,
+in three linked changes (each repo committed separately, none
+published yet):
 
-1. `audio-engine`'s `FftProcessor::processInterleaved` downmixes every
-   channel to mono before the FFT, and the NDJSON `fft-frame` carries
-   only that mono pair. The minimal engine change is to keep
-   per-channel time-domain data and per-channel FFT (or at least
-   per-channel levels + a stereo PCM tap), and to emit them in the
-   frame — plus the sample rate, which no layer currently exposes.
-2. `plugin-visualizer`'s `NativeMpvImpl` (BBeBee repo) must forward
-   the per-channel frame instead of smoothing only the mono spectrum,
-   and the `VisualizerService` protocol must gain the stereo fields
-   (the shape in `audio-frame.ts` is the proposal).
-3. The Web Audio path needs the same treatment: an `AnalyserNode`
-   alone does not give per-channel data either, so a stereo source
-   there means a splitter + two analysers, or a worklet tap.
+1. `audio-engine`: `FftProcessor` keeps channels 0 and 1 alongside
+   the mono mix (same Hann/FFT/dB pipeline, shared as one helper),
+   and the NDJSON `fft-frame` carries `channels`/`sampleRateHz` plus
+   the per-channel arrays — only on stereo frames, never on mono.
+2. BBeBee: the desktop supervisor's `FftFrame` forwards those fields
+   (serde defaults keep old mono-only frames parsing), and
+   `plugin-visualizer`'s `NativeMpvImpl` smooths and serves the
+   per-channel data through the `VisualizerService` protocol's new
+   optional stereo fields (`channels`, `sampleRateHz`,
+   `getLeft/RightFrequencyData`, `getLeft/RightTimeDomainData`).
+3. This repo: the adapter above reads them; no meter changed, because
+   the meters already consumed `AudioFrame` and checked
+   `channels === 2`.
 
-Until that chain lands, the XY scope, stereo level meter and stereo
-field render an explicit "needs stereo data" placeholder on the mono
-source. Copying the mono mix to both channels would draw a perfect
-diagonal and a zero-width field — a lie that looks like data — so it
-is deliberately not done. Likewise, a sample-accurate oscilloscope
-needs the same PCM tap, not analyser windows.
-
-This change touches **only** the meters repo. No audio-engine or
-BBeBee change is included, and none is needed for the mono meters,
-the workspace, or the frame interface itself.
+Still mono, by design: the Web Audio path (an `AnalyserNode` alone
+does not give per-channel data — a stereo source there means a
+splitter + two analysers, or a worklet tap) and the mobile engines
+(JNI/iOS compute the stereo buffers in `FftProcessor` now, but do
+not expose them yet — a separate mobile-surface change). On those
+hosts the XY scope, stereo level meter and stereo field still render
+their explicit "needs stereo data" placeholder. Copying the mono mix
+to both channels would draw a perfect diagonal and a zero-width
+field — a lie that looks like data — so it is deliberately not done.
+Likewise, a sample-accurate oscilloscope needs the same PCM tap, not
+analyser windows.
 
 ## Configuration
 

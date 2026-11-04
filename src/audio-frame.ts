@@ -12,33 +12,31 @@
  *   the Web Audio `AnalyserNode` byte conventions the `visualizer`
  *   service already speaks — frequency bytes 0..255 (engine-mapped,
  *   roughly −100…−30 dB), time bytes centred on 128 (= 0.0).
- * - `left` / `right`: per-channel byte data. **Absent today, by design.**
- *   The current chain downmixes to mono before any meter sees it (see
- *   "Why stereo meters show a placeholder" below), so a meter that needs
- *   stereo must check `channels === 2` and render an honest placeholder
- *   instead of inventing a second channel from the mono mix. A mono mix
- *   copied to both channels would draw a perfect diagonal on the XY
- *   scope and a zero-width stereo field — a lie that looks like data.
- * - `sampleRateHz`: absent today. The `visualizer` service does not
- *   expose it, so frequency/time axes that need it (octave bands,
- *   oscilloscope milliseconds) fall back to a nominal 48 kHz and say so
- *   on the panel. When the host supplies it, the same meters become
- *   exact with no code change.
+ * - `left` / `right`: per-channel byte data, present only when
+ *   `channels === 2`. A meter that needs stereo must check that, not
+ *   array presence, and render an honest placeholder on mono: a mono
+ *   mix copied to both channels would draw a perfect diagonal on the
+ *   XY scope and a zero-width stereo field — a lie that looks like
+ *   data.
+ * - `sampleRateHz`: present when the host chain reports it (the
+ *   desktop engine's fft-frame carries it); otherwise frequency/time
+ *   axes that need it (octave bands, oscilloscope milliseconds) fall
+ *   back to a nominal 48 kHz and say so on the panel.
  *
- * ## Why stereo meters show a placeholder (the audio-engine answer)
+ * ## Where stereo comes from now
  *
- * `audio-engine`'s `FftProcessor::processInterleaved` downmixes every
- * channel to mono before the FFT, and the NDJSON `fft-frame` it emits
- * carries only that mono pair. `plugin-visualizer`'s `NativeMpvImpl`
- * then smooths the mono spectrum and hands it out through
- * `getFrequencyData` / `getTimeDomainData`. Nothing in the meters repo
- * can recover L/R from that — the information is gone upstream. True
- * stereo meters (XY scope, stereo field, per-channel levels, BS.1770
- * loudness) need the engine to keep per-channel PCM/FFT and the
- * `visualizer` service to expose it; the minimal change set is listed
- * in the README section "Stereo data: what audio-engine must change".
- * This file is already shaped for that frame: `left` / `right` and
- * `sampleRateHz` are optional fields, not a second interface.
+ * The chain that used to be mono end to end now carries stereo on
+ * desktop: `audio-engine`'s `FftProcessor` keeps channels 0 and 1
+ * alongside the mono mix, the NDJSON `fft-frame` carries the
+ * per-channel arrays plus `channels`/`sampleRateHz`, the desktop
+ * supervisor forwards them, and `plugin-visualizer`'s `NativeMpvImpl`
+ * exposes them through the `visualizer` service's stereo methods.
+ * This adapter reads that service: when it reports `channels === 2`
+ * and the stereo methods exist, frames are stereo; otherwise they
+ * are mono, and the stereo meters keep their placeholder. The Web
+ * Audio path and mobile engines still report mono — they have no
+ * per-channel analyser — so the placeholder is not dead code, it is
+ * the honest rendering for those hosts.
  *
  * ## Frame stitching caveat
  *
@@ -64,8 +62,14 @@ function byteToSample(byte: number): number {
 /** The slice of the `visualizer` service this file adapts (see ui.tsx). */
 export interface VisualizerLike {
   readonly settings: { fftSize?: number }
+  readonly channels?: 1 | 2
+  readonly sampleRateHz?: number
   getFrequencyData(array: Uint8Array): void
   getTimeDomainData(array: Uint8Array): void
+  getLeftFrequencyData?(array: Uint8Array): void
+  getRightFrequencyData?(array: Uint8Array): void
+  getLeftTimeDomainData?(array: Uint8Array): void
+  getRightTimeDomainData?(array: Uint8Array): void
 }
 
 /** One channel's byte data, in AnalyserNode conventions. */
@@ -98,7 +102,13 @@ export interface AudioFrame {
  * optimisation is only worth it if panel counts grow well past ten.
  */
 export interface FrameSource {
-  /** 1 today (mono adapter below); 2 once a stereo source is wired in. */
+  /**
+   * 2 when the attached visualizer reports stereo and the stereo
+   * methods exist; otherwise 1. Read per pull, not once, because the
+   * analyser can switch (engine attach, track change) mid-session.
+   * The getter below is therefore per-frame; this field is the
+   * initial value only.
+   */
   readonly channels: 1 | 2
   readonly sampleRateHz?: number
   readonly available: boolean
@@ -112,11 +122,12 @@ export function clampFftSize(value: number): number {
 }
 
 /**
- * Adapts the existing mono `visualizer` service to a `FrameSource`.
- * This is the only adapter that exists today, and it is honest about
- * it: `channels` is 1, `sampleRateHz` is undefined, `left`/`right` are
- * absent. A future stereo adapter implements the same interface and
- * the meters do not change.
+ * Adapts the `visualizer` service to a `FrameSource`. Stereo is
+ * accepted only as a package — `channels === 2` reported by the
+ * service *and* all four stereo methods present — mirroring the
+ * analyser's own rule. A service that reports 2 without the methods
+ * (or the methods without the report) is treated as mono: a partial
+ * stereo claim must not produce half-real channels.
  */
 export function createVisualizerFrameSource(
   visualizer: VisualizerLike | undefined,
@@ -132,9 +143,13 @@ export function createVisualizerFrameSource(
   let fftSize = 0
   let freq = new Uint8Array(0)
   let time = new Uint8Array(0)
+  let leftFreq = new Uint8Array(0)
+  let leftTime = new Uint8Array(0)
+  let rightFreq = new Uint8Array(0)
+  let rightTime = new Uint8Array(0)
   return {
     channels: 1,
-    sampleRateHz: undefined,
+    sampleRateHz: visualizer.sampleRateHz,
     available: true,
     pull: (): AudioFrame => {
       const target = clampFftSize(visualizer.settings?.fftSize ?? 128)
@@ -142,18 +157,38 @@ export function createVisualizerFrameSource(
         fftSize = target
         freq = new Uint8Array(fftSize / 2)
         time = new Uint8Array(fftSize)
+        leftFreq = new Uint8Array(fftSize / 2)
+        leftTime = new Uint8Array(fftSize)
+        rightFreq = new Uint8Array(fftSize / 2)
+        rightTime = new Uint8Array(fftSize)
       }
       visualizer.getFrequencyData(freq)
       visualizer.getTimeDomainData(time)
-      return {
+      const stereo =
+        visualizer.channels === 2 &&
+        visualizer.getLeftFrequencyData &&
+        visualizer.getRightFrequencyData &&
+        visualizer.getLeftTimeDomainData &&
+        visualizer.getRightTimeDomainData
+      // Copy: the analyser reuses its own buffers, and meters (notably
+      // the waterfall and waveform history) retain frames across ticks.
+      const frame: AudioFrame = {
         timestampMs: Date.now(),
-        sampleRateHz: undefined,
+        sampleRateHz: visualizer.sampleRateHz,
         channels: 1,
-        // Copy: the analyser reuses its own buffers, and meters (notably
-        // the waterfall and waveform history) retain frames across ticks.
         frequencyData: freq.slice(),
         timeDomainData: time.slice(),
       }
+      if (stereo) {
+        visualizer.getLeftFrequencyData!(leftFreq)
+        visualizer.getLeftTimeDomainData!(leftTime)
+        visualizer.getRightFrequencyData!(rightFreq)
+        visualizer.getRightTimeDomainData!(rightTime)
+        frame.channels = 2
+        frame.left = { frequencyData: leftFreq.slice(), timeDomainData: leftTime.slice() }
+        frame.right = { frequencyData: rightFreq.slice(), timeDomainData: rightTime.slice() }
+      }
+      return frame
     },
   }
 }

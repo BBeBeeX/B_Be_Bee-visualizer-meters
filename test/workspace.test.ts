@@ -180,6 +180,36 @@ test('mono visualizer adapter returns a mono frame, silence source returns null'
   assert.equal(absent.pull(), null)
 })
 
+test('stereo visualizer adapter returns per-channel data only as a package', () => {
+  const stereo = {
+    settings: { fftSize: 128 },
+    channels: 2 as const,
+    sampleRateHz: 48000,
+    getFrequencyData: (array: Uint8Array) => array.fill(100),
+    getTimeDomainData: (array: Uint8Array) => array.fill(128),
+    getLeftFrequencyData: (array: Uint8Array) => array.fill(200),
+    getLeftTimeDomainData: (array: Uint8Array) => array.fill(220),
+    getRightFrequencyData: (array: Uint8Array) => array.fill(10),
+    getRightTimeDomainData: (array: Uint8Array) => array.fill(120),
+  }
+  const frame = createVisualizerFrameSource(stereo).pull()!
+  assert.equal(frame.channels, 2)
+  assert.equal(frame.sampleRateHz, 48000)
+  assert.equal(frame.left!.frequencyData[0], 200)
+  assert.equal(frame.right!.frequencyData[0], 10)
+  assert.equal(frame.left!.timeDomainData[0], 220)
+
+  // Channels reported without the methods: mono, not half-stereo.
+  const partial = createVisualizerFrameSource({
+    settings: { fftSize: 128 },
+    channels: 2 as const,
+    getFrequencyData: (array: Uint8Array) => array.fill(100),
+    getTimeDomainData: (array: Uint8Array) => array.fill(128),
+  }).pull()!
+  assert.equal(partial.channels, 1)
+  assert.equal(partial.left, undefined)
+})
+
 test('TimeHistory returns oldest-first snapshots', () => {
   const history = new TimeHistory(4)
   history.pushBytes(new Uint8Array([128, 192]))
