@@ -21,7 +21,7 @@
 
 export type MetersMode = 'spectrum' | 'spectrogram' | 'vu'
 
-export type MetersPaletteName = 'ember' | 'ice' | 'mono'
+export type MetersPaletteName = 'ember' | 'ice' | 'mono' | 'aura'
 
 export interface MetersConfig {
   /** Which meter the page shows first. */
@@ -32,11 +32,11 @@ export interface MetersConfig {
 
 export const METERS_MODES: readonly MetersMode[] = ['spectrum', 'spectrogram', 'vu']
 
-export const METERS_PALETTES: readonly MetersPaletteName[] = ['ember', 'ice', 'mono']
+export const METERS_PALETTES: readonly MetersPaletteName[] = ['ember', 'ice', 'mono', 'aura']
 
 export const DEFAULT_METERS_CONFIG: MetersConfig = {
   mode: 'spectrum',
-  palette: 'ember',
+  palette: 'aura',
 }
 
 /**

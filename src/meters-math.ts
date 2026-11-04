@@ -260,6 +260,18 @@ export const PALETTE_STOPS: Record<string, readonly RgbStop[]> = {
     [192, 192, 192],
     [255, 255, 255],
   ],
+  /**
+   * `aura` is the workspace's default look: deep blue-green shadows
+   * rising through teal to pale mint — the AURA figure's single-hue
+   * scale, not a heat scale. Low values stay dark so quiet bars and
+   * waterfall rows recede into the card instead of glowing grey.
+   */
+  aura: [
+    [10, 24, 28],
+    [16, 80, 72],
+    [94, 234, 200],
+    [210, 255, 235],
+  ],
 }
 
 /** Builds a 256×3 RGB lookup table by interpolating the given stops. */

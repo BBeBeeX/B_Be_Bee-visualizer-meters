@@ -146,7 +146,7 @@ export interface Panel {
 export interface Workspace {
   version: 1
   name: string
-  palette: 'ember' | 'ice' | 'mono'
+  palette: 'ember' | 'ice' | 'mono' | 'aura'
   snap: boolean
   panels: Panel[]
 }
@@ -174,7 +174,7 @@ function isKind(value: unknown): value is MeterKind {
 }
 
 function isPalette(value: unknown): value is Workspace['palette'] {
-  return value === 'ember' || value === 'ice' || value === 'mono'
+  return value === 'ember' || value === 'ice' || value === 'mono' || value === 'aura'
 }
 
 let panelCounter = 0
@@ -362,7 +362,7 @@ export const WORKSPACE_PRESETS: Record<
 }
 
 export function defaultWorkspace(): Workspace {
-  return WORKSPACE_PRESETS.studio!.build('ember')
+  return WORKSPACE_PRESETS.studio!.build('aura')
 }
 
 /* ── Storage: host store → localStorage → memory ──────────────────────── */

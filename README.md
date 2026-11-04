@@ -135,6 +135,34 @@ canvas. The workspace only composes them.
   field does not contain), plus width and correlation. Stereo only
   (see below).
 
+## Visual style: AURA
+
+The page is styled after the AURA studio figure, and the style is
+deliberate, not host-following: a near-black blue-green canvas with
+soft aurora glows, dark translucent cards (16 px radius, thin light
+border, soft shadow), muted blue-grey secondary text, and one mint
+accent for every live line. All values live in one place
+(`src/aura-theme.ts`), shared by the panel chrome and the canvas
+drawing, so chrome and meters cannot drift apart.
+
+Consequences worth knowing:
+
+- The page forces its own dark container and no longer follows the
+  host's CSS variables. On a light host theme the workspace still
+  looks like the figure — that break is intentional.
+- The default palette is now `aura` (dark teal → mint); `ember`,
+  `ice` and `mono` remain selectable, and old saved workspaces with
+  those palettes still validate.
+- The top bar copies the figure's shape (workspace name, LIVE pill,
+  format readout) but not its claimed numbers: the readout is rendered
+  from the live `FrameSource` — sample rate labelled "assumed" while
+  the source does not report one, channel count as Mono until a stereo
+  source exists. No bit depth is shown, because no layer reports one.
+- The glass here is CSS-only (translucent dark panels over a gradient
+  canvas), not platform vibrancy — the same restraint the mobile work
+  applies to large surfaces, kept for a desktop page that must look
+  identical on any host.
+
 ## The workspace
 
 The page is a free canvas of panels, not a fixed grid:

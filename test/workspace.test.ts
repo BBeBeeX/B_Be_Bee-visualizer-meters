@@ -28,11 +28,14 @@ import {
 } from '../src/audio-frame.ts'
 import {
   aggregateOctaveBands,
+  buildPaletteLut,
   byteToDb,
   computeStereoLevels,
   createLoudnessState,
   loudnessFromRms,
+  lutColor,
   octaveBandEdges,
+  PALETTE_STOPS,
   resampleToLogRows,
   stepLoudness,
 } from '../src/meters-math.ts'
@@ -232,6 +235,15 @@ test('loudness: silence stays at the floor, a steady tone converges', () => {
   assert.ok(state.integratedLu > -20 && state.integratedLu < 0)
   const silent = stepLoudness(createLoudnessState(), 0, 100)
   assert.equal(silent.integratedLu, -70, 'gated frames do not count toward integrated')
+})
+
+test('aura palette runs dark teal to pale mint', () => {
+  const aura = buildPaletteLut(PALETTE_STOPS.aura!)
+  assert.deepEqual(lutColor(aura, 0), [10, 24, 28])
+  assert.deepEqual(lutColor(aura, 255), [210, 255, 235])
+  const mid = lutColor(aura, 170)
+  assert.ok(mid[1] > 150, 'mid aura values are mint, not grey or hot')
+  assert.ok(mid[1] > mid[0] && mid[1] > mid[2], 'mint dominates the mid ramp')
 })
 
 test('resampleToLogRows keeps the peak of each log row', () => {

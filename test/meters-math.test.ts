@@ -207,7 +207,7 @@ test('resolveMetersConfig validates per-field with default fallbacks', () => {
   })
   assert.deepEqual(resolveMetersConfig({ mode: 'spectrogram', extra: true }), {
     mode: 'spectrogram',
-    palette: 'ember',
+    palette: 'aura',
   })
   // The result is a fresh object, never the shared defaults.
   assert.notEqual(resolveMetersConfig(undefined), DEFAULT_METERS_CONFIG)

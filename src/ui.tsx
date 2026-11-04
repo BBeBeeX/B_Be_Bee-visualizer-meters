@@ -50,6 +50,13 @@ import type { FrameSource } from './audio-frame.js'
 import { serviceOf } from './service-of.js'
 import { MeterCanvas } from './meters.js'
 import {
+  AURA,
+  auraBadgeStyle,
+  auraButtonStyle,
+  auraInputStyle,
+  auraSmallButtonStyle,
+} from './aura-theme.js'
+import {
   addPanel,
   bringToFront,
   createLocalWorkspaceStorage,
@@ -128,7 +135,7 @@ export function MetersView({ ctx, height = 132 }: MetersViewProps): ReactElement
   const source = useMemo(() => createVisualizerFrameSource(visualizer), [visualizer])
   return (
     <div style={{ width: '100%', height }}>
-      <MeterCanvas kind="spectrum-analyzer" source={source} palette="ember" />
+      <MeterCanvas kind="spectrum-analyzer" source={source} palette="aura" />
     </div>
   )
 }
@@ -217,10 +224,11 @@ function MeterPanel({
         zIndex,
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: 8,
-        border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
-        background: 'var(--color-bg-app, rgba(20, 20, 20, 0.9))',
-        color: 'var(--color-text-primary, inherit)',
+        borderRadius: 16,
+        border: AURA.panelBorder,
+        background: AURA.panelBackground,
+        boxShadow: AURA.panelShadow,
+        color: AURA.text,
         overflow: 'hidden',
       }}
     >
@@ -236,7 +244,7 @@ function MeterPanel({
           cursor: 'move',
           touchAction: 'none',
           userSelect: 'none',
-          borderBottom: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.25))',
+          borderBottom: AURA.headerBorder,
           fontSize: 12,
         }}
       >
@@ -246,7 +254,7 @@ function MeterPanel({
         {meta.needsStereo && (
           <span
             title="Needs per-channel data; shows a placeholder on a mono source"
-            style={{ fontSize: 10, padding: '1px 4px', borderRadius: 4, background: 'rgba(127, 127, 127, 0.25)', whiteSpace: 'nowrap' }}
+            style={auraBadgeStyle}
           >
             立体声
           </span>
@@ -258,7 +266,7 @@ function MeterPanel({
               title="Zoom out (wider axis range)"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => onZoom(panel.id, zoom / 1.25)}
-              style={{ cursor: 'pointer' }}
+              style={auraSmallButtonStyle}
             >
               −
             </button>
@@ -267,7 +275,7 @@ function MeterPanel({
               title="Zoom in (narrower axis range)"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={() => onZoom(panel.id, zoom * 1.25)}
-              style={{ cursor: 'pointer' }}
+              style={auraSmallButtonStyle}
             >
               +
             </button>
@@ -277,7 +285,7 @@ function MeterPanel({
           title="Remove panel"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => onRemove(panel.id)}
-          style={{ cursor: 'pointer' }}
+          style={auraSmallButtonStyle}
         >
           ×
         </button>
@@ -390,10 +398,57 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
     ...workspace.panels.map((p) => p.y + p.h + 20),
   )
 
+  const formatLabel = source.sampleRateHz
+    ? `${(source.sampleRateHz / 1000).toFixed(0)} kHz`
+    : '48 kHz（假设）'
+  const channelsLabel = source.channels === 2 ? 'Stereo' : 'Mono'
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%' }}>
-      <h2 style={{ margin: 0, fontSize: 18 }}>Visualizer Meters</h2>
-      <p style={{ margin: 0, fontSize: 12, opacity: 0.75 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        width: '100%',
+        background: AURA.pageBackground,
+        color: AURA.text,
+        padding: 16,
+        borderRadius: 20,
+        boxSizing: 'border-box',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>{workspace.name} Workspace</h2>
+        <span style={{ flex: 1 }} />
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 11,
+            padding: '3px 10px',
+            borderRadius: 999,
+            border: visualizer
+              ? '1px solid rgba(74, 222, 128, 0.4)'
+              : '1px solid rgba(148, 190, 175, 0.25)',
+            background: visualizer ? 'rgba(74, 222, 128, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+            color: visualizer ? '#bbf7d0' : AURA.muted,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: visualizer ? AURA.liveDot : AURA.muted,
+            }}
+          />
+          {visualizer ? 'LIVE' : '离线'}
+        </span>
+        <span style={{ fontSize: 12, color: AURA.muted }}>
+          {formatLabel} · {channelsLabel}
+        </span>
+      </div>
+      <p style={{ margin: 0, fontSize: 12, color: AURA.muted }}>
         实时可视化工作区：拖动标题栏移动面板，拖右下角缩放面板，
         网格吸附 {WORKSPACE_GRID_PX}px。{visualizer
           ? 'visualizer 服务可用，表头为真实数据。'
@@ -408,12 +463,12 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
           <input
             value={workspace.name}
             onChange={(e) => setWorkspace((ws) => ({ ...ws, name: e.target.value }))}
-            style={{ marginLeft: 4, fontSize: 12, padding: '2px 4px', width: 140 }}
+            style={{ ...auraInputStyle, marginLeft: 4, width: 140 }}
           />
         </label>
         <span>预设：</span>
         {(Object.keys(WORKSPACE_PRESETS) as WorkspacePresetId[]).map((preset) => (
-          <button key={preset} onClick={() => applyPreset(preset)} style={{ cursor: 'pointer', fontSize: 12 }}>
+          <button key={preset} onClick={() => applyPreset(preset)} style={auraButtonStyle}>
             {WORKSPACE_PRESETS[preset]!.name}
           </button>
         ))}
@@ -432,7 +487,7 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
             onChange={(e) =>
               setWorkspace((ws) => ({ ...ws, palette: e.target.value as MetersPaletteName }))
             }
-            style={{ fontSize: 12 }}
+            style={auraInputStyle}
           >
             {METERS_PALETTES.map((palette) => (
               <option key={palette} value={palette}>
@@ -441,15 +496,15 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
             ))}
           </select>
         </label>
-        <button onClick={exportWorkspace} style={{ cursor: 'pointer', fontSize: 12 }}>
+        <button onClick={exportWorkspace} style={auraButtonStyle}>
           导出 JSON
         </button>
-        <button onClick={() => fileRef.current?.click()} style={{ cursor: 'pointer', fontSize: 12 }}>
+        <button onClick={() => fileRef.current?.click()} style={auraButtonStyle}>
           导入 JSON
         </button>
         <button
           onClick={() => setWorkspace((ws) => WORKSPACE_PRESETS.studio!.build(ws.palette))}
-          style={{ cursor: 'pointer', fontSize: 12 }}
+          style={auraButtonStyle}
         >
           恢复默认布局
         </button>
@@ -464,7 +519,7 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
             e.target.value = ''
           }}
         />
-        <span style={{ opacity: 0.75 }}>
+        <span style={{ color: AURA.faint }}>
           保存位置：{storageKind} · {saveStatus}
         </span>
       </div>
@@ -475,7 +530,7 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
           <button
             key={kind}
             onClick={() => setWorkspace((ws) => addPanel(ws, kind))}
-            style={{ cursor: 'pointer', fontSize: 12 }}
+            style={auraButtonStyle}
           >
             {METER_META[kind].titleZh}
           </button>
@@ -488,16 +543,17 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
           width: '100%',
           height: containerHeight,
           overflow: 'hidden',
-          borderRadius: 8,
-          border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
+          borderRadius: 16,
+          border: AURA.panelBorder,
+          backgroundColor: 'rgba(0, 0, 0, 0.25)',
           backgroundImage: workspace.snap
-            ? 'linear-gradient(rgba(127,127,127,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(127,127,127,0.12) 1px, transparent 1px)'
+            ? 'linear-gradient(rgba(148,190,175,0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(148,190,175,0.10) 1px, transparent 1px)'
             : undefined,
           backgroundSize: workspace.snap ? `${WORKSPACE_GRID_PX}px ${WORKSPACE_GRID_PX}px` : undefined,
         }}
       >
         {workspace.panels.length === 0 && (
-          <p style={{ padding: 16, fontSize: 12, opacity: 0.75 }}>
+          <p style={{ padding: 16, fontSize: 12, color: AURA.muted }}>
             工作区为空：从上方添加一个表头，或载入一个预设。
           </p>
         )}
@@ -517,7 +573,7 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
           />
         ))}
       </div>
-      <p style={{ margin: 0, fontSize: 11, opacity: 0.6 }}>
+      <p style={{ margin: 0, fontSize: 11, color: AURA.faint }}>
         工作区布局、调色、吸附与缩放由本页保存（见上方保存位置），不走插件配置；
         headless 层的 mode（{DEFAULT_METERS_CONFIG.mode}）/ palette（{DEFAULT_METERS_CONFIG.palette}）解析保持不变，供旧配置兼容。
         倍频程 1/1 与 1/3 切换为面板会话内状态，不随工作区保存。

@@ -47,6 +47,7 @@ import {
   type VuState,
 } from './meters-math.js'
 import type { MeterKind } from './workspace.js'
+import { AURA } from './aura-theme.js'
 
 /* ── Shared canvas plumbing ────────────────────────────────────────────── */
 
@@ -91,7 +92,7 @@ function drawPlaceholder(
   h: number,
   lines: string[],
 ): void {
-  g.fillStyle = 'rgba(127, 127, 127, 0.9)'
+  g.fillStyle = AURA.muted
   g.font = '12px sans-serif'
   g.textAlign = 'center'
   lines.forEach((line, i) => {
@@ -106,7 +107,7 @@ function drawNote(
   h: number,
   text: string,
 ): void {
-  g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+  g.fillStyle = AURA.muted
   g.font = '10px sans-serif'
   g.textAlign = 'right'
   g.fillText(text, w - 4, h - 4)
@@ -120,7 +121,7 @@ function gridLines(
   xs: number[],
   ys: number[],
 ): void {
-  g.strokeStyle = 'rgba(127, 127, 127, 0.25)'
+  g.strokeStyle = AURA.grid
   g.lineWidth = 1
   g.beginPath()
   for (const x of xs) {
@@ -231,7 +232,7 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         .map(logX)
       const ys = [-90, -60, -30].map(dbY)
       gridLines(g, w, h, xs, ys)
-      g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+      g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
         if (f < minFreq || f > maxFreq) continue
@@ -243,24 +244,39 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       }
       const peak = peakRef.current
       const [pr, pg, pb] = lutColor(lut, 255)
-      g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
-      g.lineWidth = 1.5
-      g.beginPath()
-      let started = false
+      // AURA fill: the mint gradient under the line, fading to the card.
+      const points: Array<readonly [number, number]> = []
       for (let bin = 1; bin < frame.frequencyData.length; bin++) {
         const freq = bin * binHz
         if (freq < minFreq || freq > maxFreq) continue
         const value = frame.frequencyData[bin]!
         peak[bin] = Math.max(peak[bin]! - 0.5, value)
-        const x = logX(freq)
-        const y = dbY(byteToDb(value))
+        points.push([logX(freq), dbY(byteToDb(value))] as const)
+      }
+      if (points.length > 1) {
+        const fill = g.createLinearGradient(0, 0, 0, h)
+        fill.addColorStop(0, 'rgba(127, 231, 196, 0.32)')
+        fill.addColorStop(1, 'rgba(127, 231, 196, 0)')
+        g.fillStyle = fill
+        g.beginPath()
+        g.moveTo(points[0]![0], h - 14)
+        for (const [x, y] of points) g.lineTo(x, y)
+        g.lineTo(points[points.length - 1]![0], h - 14)
+        g.closePath()
+        g.fill()
+      }
+      g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
+      g.lineWidth = 1.5
+      g.beginPath()
+      let started = false
+      for (const [x, y] of points) {
         if (!started) {
           g.moveTo(x, y)
           started = true
         } else g.lineTo(x, y)
       }
       g.stroke()
-      g.strokeStyle = 'rgba(255, 80, 80, 0.55)'
+      g.strokeStyle = AURA.peakSoft
       g.lineWidth = 1
       g.beginPath()
       started = false
@@ -314,7 +330,7 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
         g.fillStyle = `rgb(${r}, ${gg}, ${b})`
         g.fillRect(i * (barWidth + gap), h - 16 - barHeight, barWidth, barHeight)
       })
-      g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+      g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       g.fillText('20', 2, h - 4)
       g.fillText(formatHz(maxFreq), w - 28, h - 4)
@@ -358,7 +374,7 @@ function OctaveAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement
         g.fillStyle = `rgb(${r}, ${gg}, ${b})`
         g.fillRect(i * (barWidth + gap), h - 28 - barHeight, barWidth, barHeight)
       })
-      g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+      g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       const labelEvery = fraction === 1 ? 1 : 3
       shown.forEach((band, i) => {
@@ -407,17 +423,17 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
       const traces: Array<{ samples: Float32Array; color: string; label: string }> = []
       if (frame.channels === 2 && frame.left && frame.right) {
         traces.push(
-          { samples: samplesFromBytes(frame.left.timeDomainData), color: '#5f87ff', label: 'L' },
-          { samples: samplesFromBytes(frame.right.timeDomainData), color: '#ff7a5f', label: 'R' },
+          { samples: samplesFromBytes(frame.left.timeDomainData), color: AURA.leftTrace, label: 'L' },
+          { samples: samplesFromBytes(frame.right.timeDomainData), color: AURA.rightTrace, label: 'R' },
         )
       } else {
         traces.push(
-          { samples: samplesFromBytes(frame.timeDomainData), color: '#5f87ff', label: 'mono' },
+          { samples: samplesFromBytes(frame.timeDomainData), color: AURA.leftTrace, label: 'mono' },
         )
       }
       const midY = h / 2
       gridLines(g, w, h, [w / 4, w / 2, (3 * w) / 4], [h / 4, midY, (3 * h) / 4])
-      g.strokeStyle = 'rgba(127, 127, 127, 0.6)'
+      g.strokeStyle = AURA.gridStrong
       g.beginPath()
       g.moveTo(0, midY)
       g.lineTo(w, midY)
@@ -436,7 +452,7 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
         }
         g.stroke()
       }
-      g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+      g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       g.fillText(traces.map((t) => t.label).join(' / '), 4, 12)
       g.fillText(`${visibleMs.toFixed(1)} ms window${assumed ? ' · 48 kHz assumed' : ''}`, 4, h - 4)
@@ -471,7 +487,7 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
         const window = Math.max(2, Math.floor(samples.length / Math.max(0.5, zoom)))
         const slice = samples.subarray(samples.length - window)
         const midY = top + height / 2
-        g.strokeStyle = 'rgba(127, 127, 127, 0.4)'
+        g.strokeStyle = AURA.gridStrong
         g.beginPath()
         g.moveTo(0, midY)
         g.lineTo(w, midY)
@@ -488,10 +504,10 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
         g.stroke()
       }
       if (stereo) {
-        drawTrace(leftHistory.current.snapshot(), 0, h / 2, '#5f87ff')
-        drawTrace(rightHistory.current.snapshot(), h / 2, h / 2, '#ff7a5f')
+        drawTrace(leftHistory.current.snapshot(), 0, h / 2, AURA.leftTrace)
+        drawTrace(rightHistory.current.snapshot(), h / 2, h / 2, AURA.rightTrace)
       } else {
-        drawTrace(monoHistory.current.snapshot(), 0, h, '#5f87ff')
+        drawTrace(monoHistory.current.snapshot(), 0, h, AURA.leftTrace)
       }
       drawNote(g, w, h, `frame-stitched history${assumed ? ' · 48 kHz assumed' : ''}`)
     },
@@ -562,7 +578,7 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       stripCtx.putImageData(image, 0, 0)
       g.imageSmoothingEnabled = true
       g.drawImage(strip, 0, 0, w, h)
-      g.fillStyle = 'rgba(255, 255, 255, 0.75)'
+      g.fillStyle = AURA.text
       g.font = '10px sans-serif'
       g.fillText('20 Hz', 2, h - 4)
       g.fillText(formatHz(maxFreq), 2, 12)
@@ -594,7 +610,7 @@ function XyScope({ source }: MeterProps): ReactElement {
       const cy = h / 2
       const radius = Math.min(w, h) / 2 - 14
       gridLines(g, w, h, [cx], [cy])
-      g.strokeStyle = 'rgba(127, 127, 127, 0.4)'
+      g.strokeStyle = AURA.gridStrong
       g.beginPath()
       g.arc(cx, cy, radius, 0, Math.PI * 2)
       g.stroke()
@@ -606,7 +622,7 @@ function XyScope({ source }: MeterProps): ReactElement {
       g.lineTo(cx - radius * 0.707, cy + radius * 0.707)
       g.stroke()
       const n = Math.min(left.length, right.length)
-      g.strokeStyle = 'rgba(95, 135, 255, 0.85)'
+      g.strokeStyle = AURA.accent
       g.lineWidth = 1.2
       g.beginPath()
       for (let i = 0; i < n; i++) {
@@ -618,7 +634,7 @@ function XyScope({ source }: MeterProps): ReactElement {
         else g.lineTo(x, y)
       }
       g.stroke()
-      g.fillStyle = 'rgba(127, 127, 127, 0.9)'
+      g.fillStyle = AURA.muted
       g.font = '11px sans-serif'
       g.fillText(`corr ${levels.correlation.toFixed(2)}  width ${(levels.width * 100).toFixed(0)}%`, 4, 14)
     },
@@ -646,7 +662,7 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
       leftVu.current = stepVu(leftVu.current, levels.leftRmsDb, levels.leftPeakDb)
       rightVu.current = stepVu(rightVu.current, levels.rightRmsDb, levels.rightPeakDb)
       const drawBar = (x: number, barW: number, vu: VuState, label: string) => {
-        g.fillStyle = 'rgba(127, 127, 127, 0.25)'
+        g.fillStyle = AURA.track
         g.fillRect(x, 16, barW, h - 32)
         const frac = dbToFraction(vu.levelDb)
         if (frac > 0) {
@@ -655,9 +671,9 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
           g.fillRect(x, 16 + (1 - frac) * (h - 32), barW, frac * (h - 32))
         }
         const peakY = 16 + (1 - dbToFraction(vu.peakDb)) * (h - 32)
-        g.fillStyle = 'rgba(255, 80, 80, 0.95)'
+        g.fillStyle = AURA.peak
         g.fillRect(x - 2, peakY - 1, barW + 4, 2)
-        g.fillStyle = 'rgba(127, 127, 127, 0.9)'
+        g.fillStyle = AURA.muted
         g.font = '11px sans-serif'
         g.fillText(label, x, h - 4)
         g.fillText(`${vu.levelDb <= DB_FLOOR ? '-∞' : vu.levelDb.toFixed(1)} dB`, x, 12)
@@ -665,7 +681,7 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
       const barW = Math.max(16, (w - 60) / 2)
       drawBar(20, barW, leftVu.current, 'L')
       drawBar(40 + barW, barW, rightVu.current, 'R')
-      g.fillStyle = 'rgba(127, 127, 127, 0.85)'
+      g.fillStyle = AURA.muted
       g.font = '10px sans-serif'
       for (const db of [-60, -30, 0]) {
         g.fillText(`${db}`, w - 22, 16 + (1 - dbToFraction(db)) * (h - 32) + 3)
@@ -698,17 +714,22 @@ function Loudness({ source }: MeterProps): ReactElement {
       }
       const state = stateRef.current
       const fmt = (v: number) => (v <= -70 ? '-∞' : v.toFixed(1))
-      g.fillStyle = 'rgba(127, 127, 127, 0.9)'
+      // AURA loudness: the integrated value is the hero number, the
+      // rest are supporting readouts underneath it.
+      g.fillStyle = AURA.text
+      g.font = '700 30px sans-serif'
+      g.fillText(`${fmt(state.integratedLu)}`, 8, 36)
       g.font = '12px sans-serif'
-      g.fillText(`Integrated  ${fmt(state.integratedLu)} LUFS`, 8, 20)
-      g.fillText(`Short-term  ${fmt(state.shortTermLu)} LUFS`, 8, 40)
-      g.fillText(`Momentary  ${fmt(state.momentaryLu)} LUFS`, 8, 60)
-      g.fillText(`LRA (windowed)  ${state.lraLu.toFixed(1)} LU`, 8, 80)
+      g.fillStyle = AURA.muted
+      g.fillText('LUFS  Integrated', 8, 54)
+      g.fillText(`Short-term  ${fmt(state.shortTermLu)} LUFS`, 8, 72)
+      g.fillText(`Momentary  ${fmt(state.momentaryLu)} LUFS`, 8, 88)
+      g.fillText(`LRA (windowed)  ${state.lraLu.toFixed(1)} LU`, 8, 104)
       // Short-term history trace.
-      const traceTop = 96
+      const traceTop = 118
       const traceH = Math.max(20, h - traceTop - 28)
       gridLines(g, w, h, [], [traceTop + traceH / 2])
-      g.strokeStyle = '#5f87ff'
+      g.strokeStyle = AURA.accent
       g.lineWidth = 1.2
       g.beginPath()
       state.shortHistory.forEach((lu, i) => {
@@ -742,7 +763,7 @@ function StereoField({ source }: MeterProps): ReactElement {
       const cx = w / 2
       const cy = (h - 30) / 2 + 10
       const radius = Math.min(w, h - 30) / 2 - 10
-      g.strokeStyle = 'rgba(127, 127, 127, 0.4)'
+      g.strokeStyle = AURA.gridStrong
       g.beginPath()
       g.arc(cx, cy, radius, 0, Math.PI * 2)
       g.stroke()
@@ -756,7 +777,7 @@ function StereoField({ source }: MeterProps): ReactElement {
       // phase = horizontal line. Dots, not a polyline: the field is a
       // cloud, and connecting samples in time order would draw chords
       // the field does not contain.
-      g.fillStyle = 'rgba(95, 135, 255, 0.5)'
+      g.fillStyle = AURA.accentSoft
       const n = Math.min(left.length, right.length)
       for (let i = 0; i < n; i++) {
         const l = left[i]!
@@ -765,7 +786,7 @@ function StereoField({ source }: MeterProps): ReactElement {
         const y = cy - ((l + r) / 2) * radius * 1.414
         g.fillRect(x, y, 1.5, 1.5)
       }
-      g.fillStyle = 'rgba(127, 127, 127, 0.9)'
+      g.fillStyle = AURA.muted
       g.font = '11px sans-serif'
       g.fillText(`width ${(levels.width * 100).toFixed(0)}%  corr ${levels.correlation.toFixed(2)}`, 4, 14)
       g.fillText('mid ↑  side →', 4, h - 4)
