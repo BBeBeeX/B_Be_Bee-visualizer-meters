@@ -8,12 +8,9 @@ reference example in the BBeBee repository (`examples/visualizer-meters/`)
 and is maintained here as its own release repo — copy it as the starting
 point for your own plugin.
 
-It adds a Visualizer Meters page, reached from the plugin tray, with three audio meters — a **spectrogram**
-(scrolling waterfall), a **spectrum** (log-spaced frequency bars) and a
-**VU meter** (RMS + peak on a dB scale) — all driven by a service it does
-not own: the `visualizer` service of the first-party
+It adds a Visualizer Meters workspace page, reached from the plugin tray, with ten independent audio meters — the SignalScope XM set (FFT Analyzer, Oscilloscope, Octave Analyzer, Spectrogram, XY Scope) and the AURA set (Spectrum Analyzer, Waveform, Stereo Level Meter, Loudness Meter, Stereo Field, Spectrogram shared) — all driven by a service it does not own: the `visualizer` service of the first-party
 `@BBeBee/plugin-visualizer` plugin (published to npm as
-`@bbebee/plugin-visualizer`).
+`@bbebee/plugin-visualizer`). Panels drag, resize, snap to a 20 px grid, and save as a workspace (see "The workspace" below).
 
 ## What this plugin demonstrates
 
@@ -50,13 +47,23 @@ build.mjs               esbuild: src/index.ts → dist/index.js,
 src/
   config.ts             modes, palettes, defaults, config schema, resolver
   meters-math.ts        pure frame math (levels, VU ballistics, log bands,
-                        waterfall ring buffer, palette LUTs)
+                        octave bands, stereo levels, loudness, waterfall
+                        ring buffer, palette LUTs)
+  audio-frame.ts        the real-time data interface: AudioFrame,
+                        FrameSource, the mono visualizer adapter, and the
+                        waveform TimeHistory (see below)
+  workspace.ts          workspace layout model, presets, validation and
+                        storage (pure — no DOM, unit-tested)
+  meters.tsx            the ten independent meter components, each with
+                        its own canvas and animation loop
   index.ts              headless def: config resolution, optional
                         visualizer watch
-  ui.tsx                UI def: meters page registered as a tray route;
-                        the canvas meters
+  ui.tsx                UI def: workspace page registered as a tray route;
+                        panel chrome (drag / resize / zoom / save)
 test/
   meters-math.test.ts   node:test unit tests for the pure modules
+  workspace.test.ts     node:test unit tests for the workspace model,
+                        the frame adapter and the new meter math
 ```
 
 ## How the visualizer service is consumed
@@ -76,26 +83,132 @@ The view runs one `requestAnimationFrame` loop, pulls one frame per tick,
 and stops the loop on unmount. With no service (or no audio) the buffers
 stay at their silence values and every meter draws its baseline.
 
-## The three meters
+## The ten meters
 
-- **Spectrum** — bins are grouped into 48 **logarithmically** spaced bands
-  (`logBandEdges` in `meters-math.ts`; pitch perception is logarithmic, so
-  linear grouping would waste half the width on bass). Each band shows its
-  peak bin, coloured through the active palette.
+Every meter is an independent component in `src/meters.tsx`: it takes a
+`FrameSource`, pulls one frame per animation tick, and draws its own
+canvas. The workspace only composes them.
+
+- **FFT Analyzer** — per-bin magnitude line on a dB scale (engine-mapped
+  −100…−30 dB), log frequency axis, slow-falling peak line. Zoom narrows
+  the visible frequency range.
+- **Spectrum Analyzer** — bins grouped into 48 **logarithmically** spaced
+  bands (`logBandEdges`; pitch perception is logarithmic, so linear
+  grouping would waste half the width on bass). Each band shows its peak
+  bin, coloured through the active palette. This is the old "Spectrum"
+  mode, kept as its own component: bars for at-a-glance levels, the FFT
+  line for analysis detail.
+- **Octave Analyzer** — 1/1- or 1/3-octave bands (toggle on the panel)
+  with centre-frequency labels. Bands narrower than one FFT bin are
+  dropped, not drawn as lying bars — at the default fftSize of 128 the
+  low octaves simply do not exist, and the panel says to raise fftSize.
 - **Spectrogram** — every frame becomes one column of a ring buffer
-  (`WaterfallBuffer`, 240 columns); new frames enter at the right and
-  history scrolls left. Frequencies run bottom (low) to top (high), values
-  map through a pseudocolor LUT: `ember` is black → purple → orange →
-  yellow, alongside `ice` and `mono`. Rendering goes through an offscreen
-  `ImageData` strip scaled up to the canvas.
-- **VU** — RMS and peak are computed from the time-domain frame and shown
-  on a −60…0 dB scale. Ballistics (`stepVu`, a pure function): the level
-  bar attacks instantly and releases at 0.9 dB/frame; the peak marker jumps
-  to a new peak, holds ≈45 frames, then falls at 0.35 dB/frame and never
-  below the current frame's peak.
+  (`WaterfallBuffer`, 240 columns × 64 log-frequency rows); new frames
+  enter at the right and history scrolls left. Frequencies run bottom
+  (low) to top (high), values map through a pseudocolor LUT: `ember` is
+  black → purple → orange → yellow, alongside `ice` and `mono`.
+  Rendering goes through an offscreen `ImageData` strip scaled up to
+  the canvas. Zoom crops to the low-frequency rows.
+- **Oscilloscope** — the latest time-domain frame, channels overlaid,
+  with an ms time axis. Zoom shows the first part of the frame in
+  detail.
+- **Waveform** — scrolling history of time-domain frames (a
+  `TimeHistory` ring, channels stacked when stereo). The history is
+  frame-stitched — the analyser hands out its latest FFT window per
+  tick, not a guaranteed-contiguous PCM stream — so the time axis is
+  approximate and labelled as such.
+- **XY Scope** — Lissajous plot, left against right, with correlation
+  and width readouts. Stereo only (see below).
+- **Stereo Level Meter** — per-channel RMS + peak bars on a −60…0 dB
+  scale. Ballistics (`stepVu`, a pure function): the level bar attacks
+  instantly and releases at 0.9 dB/frame; the peak marker jumps to a new
+  peak, holds ≈45 frames, then falls at 0.35 dB/frame and never below
+  the current frame's peak. Stereo only (see below).
+- **Loudness Meter** — momentary (τ 400 ms), short-term (τ 3 s) and
+  integrated loudness plus a windowed loudness range, stepped at
+  ~10 Hz. **These numbers are approximate, not BS.1770**: the input is
+  8-bit mono byte data with no K-weighting filter and no channel
+  weighting (see `meters-math.ts` for the exact simplifications). The
+  panel says so; do not quote them as certified LUFS.
+- **Stereo Field** — goniometer: mid vertical, side horizontal, as a
+  dot cloud (not a time-ordered polyline, which would draw chords the
+  field does not contain), plus width and correlation. Stereo only
+  (see below).
 
-Mode and palette can be switched from the segmented control on the page
-itself; it writes to one small store inside the UI bundle.
+## The workspace
+
+The page is a free canvas of panels, not a fixed grid:
+
+- **Drag** a panel by its title bar; **resize** by its bottom-right
+  corner. Panels may overlap; array order is z-order, and clicking a
+  panel brings it to front.
+- **Grid snap** (20 px, toggleable) applies to both drag and resize,
+  and the canvas shows the grid while it is on.
+- **Zoom** (− / + on panels that have an axis) scales that meter's
+  axis — frequency range for FFT / spectrum / octave / spectrogram,
+  time window for oscilloscope / waveform. Meters without an axis have
+  no zoom control, rather than one that does nothing.
+- **Presets**: SignalScope (the five SignalScope XM meters), AURA (the
+  six AURA meters), Studio (all ten). Any panel can be added again from
+  the "add meter" row — composition is not limited to one of each.
+- **Save**: layout, palette, snap and zoom auto-save (debounced) to
+  the host store when the view can reach one (`ctx.store`, the
+  namespaced key/value service first-party plugins already use for
+  small state — no manifest capability is needed for a blob this
+  size), else to `localStorage`, else for the session only. The page
+  always shows which backend is in effect. JSON export/import always
+  works, so a workspace is never trapped in one backend. Imported
+  JSON is validated: unknown kinds are dropped, bad numbers fall back
+  to safe defaults, duplicate ids are de-duplicated.
+
+## The real-time data interface (`src/audio-frame.ts`)
+
+Meters never touch the `visualizer` service directly. They consume an
+`AudioFrame` through a `FrameSource`:
+
+- `frequencyData` / `timeDomainData`: the mono mix (or channel 0), in
+  AnalyserNode byte conventions.
+- `left` / `right`: per-channel byte data — **absent today**, and the
+  interface says so instead of faking it.
+- `sampleRateHz`: **absent today**. Meters that need it (octave bands,
+  oscilloscope milliseconds) assume 48 kHz and label the assumption on
+  the panel.
+
+The only adapter that exists today,
+`createVisualizerFrameSource`, wraps the existing mono service. When a
+stereo source exists it implements the same interface and no meter
+changes.
+
+## Stereo data: what audio-engine must change
+
+**Yes, audio-engine must change for true stereo meters — but not for
+anything in this change.** The chain today is mono end to end, and no
+meters-side code can recover what was discarded upstream:
+
+1. `audio-engine`'s `FftProcessor::processInterleaved` downmixes every
+   channel to mono before the FFT, and the NDJSON `fft-frame` carries
+   only that mono pair. The minimal engine change is to keep
+   per-channel time-domain data and per-channel FFT (or at least
+   per-channel levels + a stereo PCM tap), and to emit them in the
+   frame — plus the sample rate, which no layer currently exposes.
+2. `plugin-visualizer`'s `NativeMpvImpl` (BBeBee repo) must forward
+   the per-channel frame instead of smoothing only the mono spectrum,
+   and the `VisualizerService` protocol must gain the stereo fields
+   (the shape in `audio-frame.ts` is the proposal).
+3. The Web Audio path needs the same treatment: an `AnalyserNode`
+   alone does not give per-channel data either, so a stereo source
+   there means a splitter + two analysers, or a worklet tap.
+
+Until that chain lands, the XY scope, stereo level meter and stereo
+field render an explicit "needs stereo data" placeholder on the mono
+source. Copying the mono mix to both channels would draw a perfect
+diagonal and a zero-width field — a lie that looks like data — so it
+is deliberately not done. Likewise, a sample-accurate oscilloscope
+needs the same PCM tap, not analyser windows.
+
+This change touches **only** the meters repo. No audio-engine or
+BBeBee change is included, and none is needed for the mono meters,
+the workspace, or the frame interface itself.
 
 ## Configuration
 
@@ -108,11 +221,13 @@ record) of the shape declared in `src/config.ts` (`METERS_CONFIG_SCHEMA`):
 
 The headless half resolves the loader-passed config against the defaults
 and logs the result. The composed UI def is registered without a config
-argument (that is how the loader's composition works today), so the UI
-seeds its session state from the same defaults and in-view changes are
-session-local. Persisting them across restarts would require a host
-storage capability (`db:own`), which this plugin deliberately does not
-request.
+argument (that is how the loader's composition works today). The old
+`mode` field is now legacy — the UI no longer has a single mode, it has
+panels — but the resolver keeps accepting it so old registry entries
+still validate. Palette, layout, snap and zoom live in the workspace
+and are saved as described in "The workspace" above (host store first,
+no `db:own` capability needed for a blob this size); the per-panel
+octave toggle (1/1 vs 1/3) is the one control that stays session-local.
 
 ## Build & test
 

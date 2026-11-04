@@ -1,68 +1,93 @@
 /**
  * bbebee-plugin-visualizer-meters — desktop UI half.
  *
- * One view, three meters, all fed by the `visualizer` service that the
- * first-party `@BBeBee/plugin-visualizer` plugin provides:
+ * A meters *workspace* page, not a single meter: the ten independent
+ * meter components in `./meters.tsx` (five from the SignalScope XM
+ * figure, five more from the AURA figure, spectrogram shared) are
+ * composed as draggable, resizable panels on a free canvas.
  *
- * - **Spectrum** — frequency bars over logarithmically spaced bands.
- * - **Spectrogram** — scrolling waterfall of past spectrum frames.
- * - **VU** — RMS level bar + peak marker on a dB scale, with classic
- *   attack/release/peak-hold ballistics.
+ * - Drag: panel headers drag; resize: the bottom-right corner handle.
+ * - Grid snap: 20 px, toggleable; when on, both drag and resize land
+ *   on grid lines. Panels may overlap — array order is z-order, and
+ *   clicking a panel brings it to front.
+ * - Zoom: panels whose meter has an axis (FFT, spectrum, octave,
+ *   spectrogram, oscilloscope, waveform) get − / + controls that scale
+ *   that meter's axis; the factor is stored on the panel and saved
+ *   with the workspace. Meters without an axis (levels, loudness,
+ *   field, XY) have no zoom control, rather than a control that does
+ *   nothing.
+ * - Save: the workspace (layout, palette, snap, zoom) is written to
+ *   the host store when the view can reach one, else to localStorage,
+ *   else kept for the session — and the page says which. JSON
+ *   export/import always works, so a workspace is never trapped in
+ *   one backend. See `./workspace.ts` for why no `db:own` capability
+ *   is needed for this.
+ * - Live data: one `FrameSource` per page (see `./audio-frame.ts`),
+ *   adapted from the `visualizer` service. Stereo meters render an
+ *   explicit placeholder on today's mono source instead of fake data.
  *
- * How the pieces follow the host's conventions:
- * - The def is a plain structural object (`{ name, inject, apply }`), no
- *   Cordis runtime import — same shape as first-party UI packages.
- * - The meters are a full page, not a now-playing slot: the view is
- *   registered with `ctx.ui.registerView` and contributed as a `route` with
- *   `placement: ['tray']`, so the plugin tray shows a "Visualizer Meters"
- *   entry that navigates to the page. Mode and palette switching live in
- *   the page itself, so there is no separate settings card.
- * - Components receive the plugin `ctx` through a bound closure and read
- *   services with a local `serviceOf` that mirrors `@BBeBee/toolkit/hooks`
- *   (`ctx.reflect.get(key, false)`), so a missing service is a value to
- *   handle, not an exception: with no visualizer (or no audio) the meters
- *   draw a quiet baseline instead of failing.
- * - React comes from the host. This bundle never contains a React copy —
- *   `build.mjs` keeps the host-shared specifiers external (single source of
- *   truth: `apps/desktop/renderer/host-modules.manifest.ts`) and fails the
- *   build if a React implementation sneaks in.
- * - Styling uses host CSS variables only (with fallbacks); no ui-kit
- *   import — a third-party bundle stays self-contained apart from the
- *   host-shared modules.
+ * The def shape follows the host's conventions (structural object, no
+ * Cordis runtime import; React stays external via the import map —
+ * see `build.mjs`).
  */
 
 import {
   createElement as h,
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
-  useSyncExternalStore,
+  useState,
 } from 'react'
 import type { ReactElement } from 'react'
 import {
-  METERS_MODES,
-  METERS_PALETTES,
   DEFAULT_METERS_CONFIG,
-  type MetersConfig,
-  type MetersMode,
+  METERS_PALETTES,
   type MetersPaletteName,
 } from './config.js'
-import {
-  DB_FLOOR,
-  PALETTE_STOPS,
-  WaterfallBuffer,
-  aggregateBands,
-  buildPaletteLut,
-  computePeak,
-  computeRms,
-  createVuState,
-  dbToFraction,
-  levelToDb,
-  logBandEdges,
-  lutColor,
-  stepVu,
-  type VuState,
-} from './meters-math.js'
+import { createVisualizerFrameSource } from './audio-frame.js'
+import type { FrameSource } from './audio-frame.js'
 import { serviceOf } from './service-of.js'
+import { MeterCanvas } from './meters.js'
+import {
+  addPanel,
+  bringToFront,
+  createLocalWorkspaceStorage,
+  createMemoryWorkspaceStorage,
+  createStoreWorkspaceStorage,
+  defaultWorkspace,
+  movePanel,
+  METER_KINDS,
+  METER_META,
+  parseWorkspace,
+  removePanel,
+  resizePanel,
+  serializeWorkspace,
+  setPanelZoom,
+  WORKSPACE_GRID_PX,
+  WORKSPACE_PRESETS,
+  type MeterKind,
+  type Panel,
+  type StoreLike,
+  type Workspace,
+  type WorkspacePresetId,
+  type WorkspaceStorage,
+} from './workspace.js'
+
+/**
+ * Resolves workspace storage for a view context, opportunistically:
+ * the view's scoped context may expose `store` through `reflect`
+ * (same mechanism the meters already use for `visualizer`); when it
+ * does not, fall back without throwing. The page displays `kind` so
+ * the user always knows where "saved" actually went.
+ */
+function resolveWorkspaceStorage(ctx: PluginContextLike): WorkspaceStorage {
+  const store = serviceOf<StoreLike>(ctx, 'store')
+  if (store && typeof store.get === 'function' && typeof store.set === 'function') {
+    return createStoreWorkspaceStorage(store)
+  }
+  return createLocalWorkspaceStorage() ?? createMemoryWorkspaceStorage()
+}
 
 /* ── Minimal host context surface (structural, no runtime imports) ────── */
 
@@ -71,13 +96,6 @@ interface LoggerLike {
   warn(...args: unknown[]): void
 }
 
-/**
- * The protocol `VisualizerService` surface this view consumes:
- * `getFrequencyData` fills a byte array of `fftSize / 2` entries (0-filled
- * by the service itself when no analyser is attached), and
- * `getTimeDomainData` fills a byte array of `fftSize` entries (128-filled
- * = silence). `settings.fftSize` is the sizing source for both buffers.
- */
 interface VisualizerServiceLike {
   readonly settings: { fftSize?: number }
   getFrequencyData(array: Uint8Array): void
@@ -93,372 +111,417 @@ interface PluginContextLike {
   logger: LoggerLike
   ui: UiServiceLike
   effect(fn: unknown, name?: string): unknown
-  reflect?: { get(key: string, strict?: boolean): unknown }
+  reflect?: { get(key: string, required: boolean): unknown }
   [key: string]: unknown
 }
 
-/* `serviceOf` lives in `./service-of.js` (reflect-only — see that file
-   for why a `ctx[key]` fallback must never come back). */
-
-/* ── Shared view state (this bundle only) ───────────────────────────────── */
-
-/**
- * Mode + palette live in a tiny module-level store so the meters page
- * keeps its controls and canvas in sync. Seeded from the same defaults the
- * headless half resolves; session-local by design (see `src/config.ts` for
- * why).
- */
-type MetersUiState = MetersConfig
-
-let uiSnapshot: MetersUiState = { ...DEFAULT_METERS_CONFIG }
-const uiListeners = new Set<() => void>()
-
-function setUiState(patch: Partial<MetersUiState>): void {
-  uiSnapshot = { ...uiSnapshot, ...patch }
-  for (const listener of uiListeners) listener()
-}
-
-function subscribeUi(listener: () => void): () => void {
-  uiListeners.add(listener)
-  return () => {
-    uiListeners.delete(listener)
-  }
-}
-
-function useMetersUiState(): MetersUiState {
-  return useSyncExternalStore(subscribeUi, () => uiSnapshot, () => uiSnapshot)
-}
-
-/* ── Small controls ─────────────────────────────────────────────────────── */
-
-const MODE_LABELS: Record<MetersMode, string> = {
-  spectrum: 'Spectrum',
-  spectrogram: 'Spectrogram',
-  vu: 'VU',
-}
-
-function ModeSwitch({ value, onChange }: { value: MetersMode; onChange: (m: MetersMode) => void }) {
-  return (
-    <div
-      role="tablist"
-      aria-label="Meter mode"
-      style={{ display: 'inline-flex', gap: 2, padding: 2, borderRadius: 6, border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))' }}
-    >
-      {METERS_MODES.map((mode) => (
-        <button
-          key={mode}
-          role="tab"
-          aria-selected={mode === value}
-          onClick={() => onChange(mode)}
-          style={{
-            border: 'none',
-            borderRadius: 4,
-            padding: '2px 8px',
-            fontSize: 12,
-            cursor: 'pointer',
-            color: 'var(--color-text-primary, inherit)',
-            background:
-              mode === value ? 'var(--color-primary, #5f87ff)' : 'transparent',
-          }}
-        >
-          {MODE_LABELS[mode]}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function PaletteSwitch({
-  value,
-  onChange,
-}: {
-  value: MetersPaletteName
-  onChange: (p: MetersPaletteName) => void
-}) {
-  return (
-    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-      Palette
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as MetersPaletteName)}
-        style={{
-          fontSize: 12,
-          color: 'var(--color-text-primary, inherit)',
-          background: 'transparent',
-          border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
-          borderRadius: 4,
-          padding: '2px 4px',
-        }}
-      >
-        {METERS_PALETTES.map((palette) => (
-          <option key={palette} value={palette}>
-            {palette}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
-}
-
-/* ── The meters view ────────────────────────────────────────────────────── */
-
-const SPECTRUM_BANDS = 48
-const WATERFALL_COLUMNS = 240
-const DB_TICKS = [-40, -30, -20, -12, -9, -6, -3, 0] as const
+/* ── Legacy single-meter view (kept for bundle compatibility) ─────────── */
 
 export interface MetersViewProps {
   ctx: PluginContextLike
   height?: number
 }
 
+/** A single spectrum meter, for embeds that predate the workspace page. */
 export function MetersView({ ctx, height = 132 }: MetersViewProps): ReactElement {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const uiState = useMetersUiState()
-  // The draw loop reads the freshest UI state through a ref so it never
-  // has to be torn down and rebuilt when the user flips a control.
-  const uiStateRef = useRef(uiState)
-  uiStateRef.current = uiState
+  const visualizer = serviceOf<VisualizerServiceLike>(ctx, 'visualizer')
+  const source = useMemo(() => createVisualizerFrameSource(visualizer), [visualizer])
+  return (
+    <div style={{ width: '100%', height }}>
+      <MeterCanvas kind="spectrum-analyzer" source={source} palette="ember" />
+    </div>
+  )
+}
 
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const g = canvas.getContext('2d')
-    if (!g) return
+/* ── One draggable, resizable panel ────────────────────────────────────── */
 
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
-    let cssWidth = 320
-    let cssHeight = height
+interface MeterPanelProps {
+  panel: Panel
+  zIndex: number
+  snap: boolean
+  palette: MetersPaletteName
+  source: FrameSource
+  onMove: (id: string, x: number, y: number) => void
+  onResize: (id: string, w: number, h: number) => void
+  onRemove: (id: string) => void
+  onZoom: (id: string, zoom: number) => void
+  onFocus: (id: string) => void
+}
 
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect()
-      cssWidth = rect.width || 320
-      cssHeight = rect.height || height
-      canvas.width = Math.max(1, Math.floor(cssWidth * dpr))
-      canvas.height = Math.max(1, Math.floor(cssHeight * dpr))
+function MeterPanel({
+  panel,
+  zIndex,
+  snap,
+  palette,
+  source,
+  onMove,
+  onResize,
+  onRemove,
+  onZoom,
+  onFocus,
+}: MeterPanelProps): ReactElement {
+  const meta = METER_META[panel.kind]
+  const dragRef = useRef<{
+    type: 'move' | 'resize'
+    startX: number
+    startY: number
+    origX: number
+    origY: number
+    origW: number
+    origH: number
+  } | null>(null)
+
+  const startDrag = (type: 'move' | 'resize') => (event: React.PointerEvent) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    onFocus(panel.id)
+    dragRef.current = {
+      type,
+      startX: event.clientX,
+      startY: event.clientY,
+      origX: panel.x,
+      origY: panel.y,
+      origW: panel.w,
+      origH: panel.h,
     }
-    resize()
-    const observer =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => resize()) : null
-    observer?.observe(canvas)
-
-    // Frame state, all local to this mount.
-    let fftSize = 0
-    let freq = new Uint8Array(0)
-    let time = new Uint8Array(0)
-    let waterfall: WaterfallBuffer | null = null
-    let waterfallBins = 0
-    let vu: VuState = createVuState()
-    const lutCache = new Map<MetersPaletteName, Uint8Array>()
-    const lutFor = (palette: MetersPaletteName): Uint8Array => {
-      let lut = lutCache.get(palette)
-      if (!lut) {
-        lut = buildPaletteLut(PALETTE_STOPS[palette] ?? PALETTE_STOPS.ember!)
-        lutCache.set(palette, lut)
-      }
-      return lut
-    }
-    // Offscreen strip for the spectrogram: one pixel per (column, bin).
-    const strip = document.createElement('canvas')
-    const stripCtx = strip.getContext('2d')
-
-    const drawBaseline = (w: number, hgt: number) => {
-      g.strokeStyle = 'rgba(127, 127, 127, 0.45)'
-      g.lineWidth = 1
-      g.beginPath()
-      g.moveTo(0, hgt - 0.5)
-      g.lineTo(w, hgt - 0.5)
-      g.stroke()
-    }
-
-    const drawSpectrum = (w: number, hgt: number, lut: Uint8Array) => {
-      const edges = logBandEdges(freq.length, SPECTRUM_BANDS)
-      const bands = aggregateBands(freq, edges)
-      const gap = 2
-      const barWidth = Math.max(1, (w - (bands.length - 1) * gap) / bands.length)
-      for (let i = 0; i < bands.length; i++) {
-        const value = bands[i]!
-        const barHeight = Math.max(value > 0 ? 2 : 0, value * (hgt - 4))
-        if (barHeight <= 0) continue
-        const [r, gg, b] = lutColor(lut, value * 255)
-        g.fillStyle = `rgb(${r}, ${gg}, ${b})`
-        g.fillRect(i * (barWidth + gap), hgt - barHeight, barWidth, barHeight)
-      }
-      drawBaseline(w, hgt)
-    }
-
-    const drawSpectrogram = (w: number, hgt: number, lut: Uint8Array) => {
-      if (!waterfall || !stripCtx) {
-        drawBaseline(w, hgt)
-        return
-      }
-      const bins = waterfallBins
-      if (strip.width !== WATERFALL_COLUMNS || strip.height !== bins) {
-        strip.width = WATERFALL_COLUMNS
-        strip.height = Math.max(1, bins)
-      }
-      const image = stripCtx.createImageData(strip.width, strip.height)
-      for (let x = 0; x < strip.width; x++) {
-        // Left edge = oldest stored frame, right edge = newest.
-        const column = waterfall.columnAtAge(strip.width - 1 - x)
-        for (let bin = 0; bin < bins; bin++) {
-          // Bin 0 (lowest frequency) belongs at the bottom: ImageData row 0
-          // is the top, so rows are written flipped.
-          const row = bins - 1 - bin
-          const offset = (row * strip.width + x) * 4
-          const value = column ? (column[bin] ?? 0) : 0
-          const [r, gg, b] = lutColor(lut, value)
-          image.data[offset] = r
-          image.data[offset + 1] = gg
-          image.data[offset + 2] = b
-          image.data[offset + 3] = 255
-        }
-      }
-      stripCtx.putImageData(image, 0, 0)
-      g.imageSmoothingEnabled = true
-      g.clearRect(0, 0, w, hgt)
-      g.drawImage(strip, 0, 0, w, hgt)
-    }
-
-    const drawVu = (w: number, hgt: number, lut: Uint8Array) => {
-      const midY = Math.floor(hgt / 2)
-      const trackY = midY - 7
-      const trackHeight = 14
-      // Track + dB ticks.
-      g.fillStyle = 'rgba(127, 127, 127, 0.25)'
-      g.fillRect(0, trackY, w, trackHeight)
-      g.fillStyle = 'rgba(127, 127, 127, 0.8)'
-      g.font = '10px sans-serif'
-      for (const db of DB_TICKS) {
-        const x = dbToFraction(db) * w
-        g.fillRect(x, trackY + trackHeight + 2, 1, 4)
-        g.fillText(`${db}`, x + 2, trackY + trackHeight + 14)
-      }
-      // Level bar, coloured by level through the active palette.
-      const levelFraction = dbToFraction(vu.levelDb)
-      if (levelFraction > 0) {
-        const [r, gg, b] = lutColor(lut, levelFraction * 255)
-        g.fillStyle = `rgb(${r}, ${gg}, ${b})`
-        g.fillRect(0, trackY, levelFraction * w, trackHeight)
-      }
-      // Peak marker.
-      const peakX = dbToFraction(vu.peakDb) * w
-      g.fillStyle = 'rgba(255, 80, 80, 0.95)'
-      g.fillRect(Math.max(0, peakX - 1), trackY - 3, 2, trackHeight + 6)
-      // Readout.
-      g.fillStyle = 'rgba(127, 127, 127, 0.9)'
-      const label = (db: number) => (db <= DB_FLOOR ? '-∞ dB' : `${db.toFixed(1)} dB`)
-      g.fillText(`RMS ${label(vu.levelDb)}   peak ${label(vu.peakDb)}`, 0, 12)
-      if (vu.levelDb <= DB_FLOOR && vu.peakDb <= DB_FLOOR) drawBaseline(w, hgt)
-    }
-
-    let animId = 0
-    const render = () => {
-      animId = requestAnimationFrame(render)
-      const { mode, palette } = uiStateRef.current
-      const lut = lutFor(palette)
-
-      // Pull one frame from the visualizer service, if it is there. The
-      // buffers follow the service's fftSize; without a service the
-      // buffers stay zeroed (128-centred for time domain) and every mode
-      // draws its quiet baseline.
-      const visualizer = serviceOf<VisualizerServiceLike>(ctx, 'visualizer')
-      const targetFft = clampFftSize(visualizer?.settings?.fftSize ?? 128)
-      if (targetFft !== fftSize) {
-        fftSize = targetFft
-        freq = new Uint8Array(fftSize / 2)
-        time = new Uint8Array(fftSize)
-        waterfall = null
-        waterfallBins = 0
-      }
-      if (visualizer) {
-        visualizer.getFrequencyData(freq)
-        visualizer.getTimeDomainData(time)
+    const onPointerMove = (move: PointerEvent) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const dx = move.clientX - drag.startX
+      const dy = move.clientY - drag.startY
+      if (drag.type === 'move') {
+        onMove(panel.id, drag.origX + dx, drag.origY + dy)
       } else {
-        freq.fill(0)
-        time.fill(128)
-      }
-
-      g.setTransform(dpr, 0, 0, dpr, 0, 0)
-      g.clearRect(0, 0, cssWidth, cssHeight)
-
-      if (mode === 'spectrum') {
-        drawSpectrum(cssWidth, cssHeight, lut)
-      } else if (mode === 'spectrogram') {
-        if (!waterfall || waterfallBins !== freq.length) {
-          waterfall = new WaterfallBuffer(WATERFALL_COLUMNS, freq.length)
-          waterfallBins = freq.length
-        }
-        waterfall.push(freq)
-        drawSpectrogram(cssWidth, cssHeight, lut)
-      } else {
-        vu = stepVu(vu, levelToDb(computeRms(time)), levelToDb(computePeak(time)))
-        drawVu(cssWidth, cssHeight, lut)
+        onResize(panel.id, drag.origW + dx, drag.origH + dy)
       }
     }
-    animId = requestAnimationFrame(render)
-
-    return () => {
-      if (animId) cancelAnimationFrame(animId)
-      observer?.disconnect()
+    const onPointerUp = () => {
+      dragRef.current = null
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
     }
-  }, [ctx, height])
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+  }
 
+  const zoom = panel.zoom ?? 1
   return (
     <div
+      onPointerDown={() => onFocus(panel.id)}
       style={{
+        position: 'absolute',
+        left: panel.x,
+        top: panel.y,
+        width: panel.w,
+        height: panel.h,
+        zIndex,
         display: 'flex',
         flexDirection: 'column',
-        gap: 6,
-        width: '100%',
-        maxWidth: 960,
+        borderRadius: 8,
+        border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
+        background: 'var(--color-bg-app, rgba(20, 20, 20, 0.9))',
         color: 'var(--color-text-primary, inherit)',
+        overflow: 'hidden',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <ModeSwitch value={uiState.mode} onChange={(mode) => setUiState({ mode })} />
-        <PaletteSwitch value={uiState.palette} onChange={(palette) => setUiState({ palette })} />
-      </div>
-      <canvas
-        ref={canvasRef}
+      <div
+        onPointerDown={startDrag('move')}
         style={{
-          width: '100%',
-          height,
-          display: 'block',
-          borderRadius: 6,
-          border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
-          background: 'var(--color-bg-app, transparent)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          height: 32,
+          flexShrink: 0,
+          padding: '0 8px',
+          cursor: 'move',
+          touchAction: 'none',
+          userSelect: 'none',
+          borderBottom: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.25))',
+          fontSize: 12,
+        }}
+      >
+        <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {meta.titleZh} <span style={{ opacity: 0.6, fontWeight: 400 }}>{meta.title}</span>
+        </span>
+        {meta.needsStereo && (
+          <span
+            title="Needs per-channel data; shows a placeholder on a mono source"
+            style={{ fontSize: 10, padding: '1px 4px', borderRadius: 4, background: 'rgba(127, 127, 127, 0.25)', whiteSpace: 'nowrap' }}
+          >
+            立体声
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {meta.hasZoom && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
+            <button
+              title="Zoom out (wider axis range)"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onZoom(panel.id, zoom / 1.25)}
+              style={{ cursor: 'pointer' }}
+            >
+              −
+            </button>
+            <span style={{ minWidth: 32, textAlign: 'center' }}>{zoom.toFixed(1)}×</span>
+            <button
+              title="Zoom in (narrower axis range)"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onZoom(panel.id, zoom * 1.25)}
+              style={{ cursor: 'pointer' }}
+            >
+              +
+            </button>
+          </span>
+        )}
+        <button
+          title="Remove panel"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => onRemove(panel.id)}
+          style={{ cursor: 'pointer' }}
+        >
+          ×
+        </button>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, padding: 6 }}>
+        <MeterCanvas kind={panel.kind} source={source} palette={palette} zoom={zoom} />
+      </div>
+      <div
+        onPointerDown={startDrag('resize')}
+        title={snap ? `Resize (snaps to ${WORKSPACE_GRID_PX}px grid)` : 'Resize'}
+        style={{
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: 16,
+          height: 16,
+          cursor: 'nwse-resize',
+          touchAction: 'none',
         }}
       />
     </div>
   )
 }
 
-function clampFftSize(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 128
-  const power = Math.round(Math.log2(value))
-  return Math.min(2048, Math.max(32, 2 ** power))
-}
+/* ── The workspace page ────────────────────────────────────────────────── */
 
-/* ── The meters page ────────────────────────────────────────────────────── */
-
-/**
- * Full-page visualization of the currently playing music, reached from the
- * plugin tray. The canvas is the same MetersView (mode/palette controls
- * included); the page just gives it room and notes whether the
- * `visualizer` service — the live frame source — is available.
- */
 export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
   const visualizer = serviceOf<VisualizerServiceLike>(ctx, 'visualizer')
+  const source = useMemo(() => createVisualizerFrameSource(visualizer), [visualizer])
+
+  const [workspace, setWorkspace] = useState<Workspace>(() => defaultWorkspace())
+  const [storageKind, setStorageKind] = useState<string>('…')
+  const [saveStatus, setSaveStatus] = useState<string>('正在加载保存的工作区…')
+  const storageRef = useRef<WorkspaceStorage | null>(null)
+  const loadedRef = useRef(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
+  // Load once: saved workspace wins over the default preset.
+  useEffect(() => {
+    const storage = resolveWorkspaceStorage(ctx)
+    storageRef.current = storage
+    setStorageKind(storage.kind)
+    void storage
+      .load()
+      .then((saved) => {
+        if (saved) setWorkspace(saved)
+        setSaveStatus(
+          storage.kind === 'memory'
+            ? '仅会话保存（宿主 store 与本地存储均不可用）'
+            : `已从${storage.kind === 'store' ? '宿主 store' : '本地存储'}加载`,
+        )
+      })
+      .catch(() => {
+        setSaveStatus('加载保存的工作区失败，使用默认布局')
+      })
+      .finally(() => {
+        loadedRef.current = true
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Debounced auto-save on every workspace change after the load.
+  useEffect(() => {
+    if (!loadedRef.current) return
+    const storage = storageRef.current
+    if (!storage) return
+    const timer = setTimeout(() => {
+      void storage
+        .save(workspace)
+        .then(() => {
+          setSaveStatus(
+            storage.kind === 'memory'
+              ? '已保存（仅本会话）'
+              : `已保存到${storage.kind === 'store' ? '宿主 store' : '本地存储'}`,
+          )
+        })
+        .catch(() => setSaveStatus('保存失败'))
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [workspace])
+
+  const applyPreset = useCallback((preset: WorkspacePresetId) => {
+    setWorkspace((ws) => WORKSPACE_PRESETS[preset]!.build(ws.palette))
+  }, [])
+
+  const exportWorkspace = useCallback(() => {
+    const blob = new Blob([serializeWorkspace(workspace)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'visualizer-meters-workspace.json'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }, [workspace])
+
+  const importWorkspace = useCallback((file: File) => {
+    void file.text().then((text) => {
+      const parsed = parseWorkspace(text)
+      if (!parsed) {
+        setSaveStatus('导入失败：文件不是有效的工作区 JSON')
+        return
+      }
+      setWorkspace(parsed)
+      setSaveStatus('已导入工作区')
+    })
+  }, [])
+
+  const containerHeight = Math.max(
+    600,
+    ...workspace.panels.map((p) => p.y + p.h + 20),
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%' }}>
       <h2 style={{ margin: 0, fontSize: 18 }}>Visualizer Meters</h2>
       <p style={{ margin: 0, fontSize: 12, opacity: 0.75 }}>
-        Live visualization of the currently playing music. The <code>visualizer</code>{' '}
-        service is{' '}
-        {visualizer ? 'available' : 'not available — the meters will show a quiet baseline'}.
-        Changes are session-local in this example (see the package README).
+        实时可视化工作区：拖动标题栏移动面板，拖右下角缩放面板，
+        网格吸附 {WORKSPACE_GRID_PX}px。{visualizer
+          ? 'visualizer 服务可用，表头为真实数据。'
+          : 'visualizer 服务不可用，表头显示基线。'}
+        立体声表头（XY、立体声电平、声场）在当前单声道数据源下显示占位，
+        不伪造第二声道——原因见 README 立体声一节。
       </p>
-      <MetersView ctx={ctx} height={360} />
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
+        <label>
+          工作区
+          <input
+            value={workspace.name}
+            onChange={(e) => setWorkspace((ws) => ({ ...ws, name: e.target.value }))}
+            style={{ marginLeft: 4, fontSize: 12, padding: '2px 4px', width: 140 }}
+          />
+        </label>
+        <span>预设：</span>
+        {(Object.keys(WORKSPACE_PRESETS) as WorkspacePresetId[]).map((preset) => (
+          <button key={preset} onClick={() => applyPreset(preset)} style={{ cursor: 'pointer', fontSize: 12 }}>
+            {WORKSPACE_PRESETS[preset]!.name}
+          </button>
+        ))}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <input
+            type="checkbox"
+            checked={workspace.snap}
+            onChange={(e) => setWorkspace((ws) => ({ ...ws, snap: e.target.checked }))}
+          />
+          网格吸附
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          Palette
+          <select
+            value={workspace.palette}
+            onChange={(e) =>
+              setWorkspace((ws) => ({ ...ws, palette: e.target.value as MetersPaletteName }))
+            }
+            style={{ fontSize: 12 }}
+          >
+            {METERS_PALETTES.map((palette) => (
+              <option key={palette} value={palette}>
+                {palette}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button onClick={exportWorkspace} style={{ cursor: 'pointer', fontSize: 12 }}>
+          导出 JSON
+        </button>
+        <button onClick={() => fileRef.current?.click()} style={{ cursor: 'pointer', fontSize: 12 }}>
+          导入 JSON
+        </button>
+        <button
+          onClick={() => setWorkspace((ws) => WORKSPACE_PRESETS.studio!.build(ws.palette))}
+          style={{ cursor: 'pointer', fontSize: 12 }}
+        >
+          恢复默认布局
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) importWorkspace(file)
+            e.target.value = ''
+          }}
+        />
+        <span style={{ opacity: 0.75 }}>
+          保存位置：{storageKind} · {saveStatus}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', fontSize: 12 }}>
+        <span>添加表头：</span>
+        {METER_KINDS.map((kind) => (
+          <button
+            key={kind}
+            onClick={() => setWorkspace((ws) => addPanel(ws, kind))}
+            style={{ cursor: 'pointer', fontSize: 12 }}
+          >
+            {METER_META[kind].titleZh}
+          </button>
+        ))}
+      </div>
+
+      <div
+        style={{
+          position: 'relative',
+          width: '100%',
+          height: containerHeight,
+          overflow: 'hidden',
+          borderRadius: 8,
+          border: '1px solid var(--border-subtle, rgba(127, 127, 127, 0.35))',
+          backgroundImage: workspace.snap
+            ? 'linear-gradient(rgba(127,127,127,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(127,127,127,0.12) 1px, transparent 1px)'
+            : undefined,
+          backgroundSize: workspace.snap ? `${WORKSPACE_GRID_PX}px ${WORKSPACE_GRID_PX}px` : undefined,
+        }}
+      >
+        {workspace.panels.length === 0 && (
+          <p style={{ padding: 16, fontSize: 12, opacity: 0.75 }}>
+            工作区为空：从上方添加一个表头，或载入一个预设。
+          </p>
+        )}
+        {workspace.panels.map((panel, index) => (
+          <MeterPanel
+            key={panel.id}
+            panel={panel}
+            zIndex={index}
+            snap={workspace.snap}
+            palette={workspace.palette}
+            source={source}
+            onMove={(id, x, y) => setWorkspace((ws) => movePanel(ws, id, x, y))}
+            onResize={(id, w, h) => setWorkspace((ws) => resizePanel(ws, id, w, h))}
+            onRemove={(id) => setWorkspace((ws) => removePanel(ws, id))}
+            onZoom={(id, zoom) => setWorkspace((ws) => setPanelZoom(ws, id, zoom))}
+            onFocus={(id) => setWorkspace((ws) => bringToFront(ws, id))}
+          />
+        ))}
+      </div>
+      <p style={{ margin: 0, fontSize: 11, opacity: 0.6 }}>
+        工作区布局、调色、吸附与缩放由本页保存（见上方保存位置），不走插件配置；
+        headless 层的 mode（{DEFAULT_METERS_CONFIG.mode}）/ palette（{DEFAULT_METERS_CONFIG.palette}）解析保持不变，供旧配置兼容。
+        倍频程 1/1 与 1/3 切换为面板会话内状态，不随工作区保存。
+      </p>
     </div>
   )
 }
@@ -467,12 +530,6 @@ export function MetersPage({ ctx }: { ctx: PluginContextLike }): ReactElement {
 
 export const name = 'bbebee-plugin-visualizer-meters-ui'
 
-/**
- * Only `ui` is hard-injected: without it there is nowhere to register the
- * views. The `visualizer` service is read opportunistically per frame via
- * `serviceOf`, so the view still mounts (and draws its baseline) when the
- * visualizer plugin is disabled or absent.
- */
 export const inject: readonly string[] = ['ui']
 
 function bound<P extends { ctx: PluginContextLike }>(
@@ -489,8 +546,6 @@ export async function apply(ctx: PluginContextLike) {
 
   return ctx.effect(function* () {
     yield ctx.ui.registerView('visualizer-meters.page', bound(ctx, MetersPage))
-    // A route with tray placement is what puts the entry in the plugin tray
-    // (plugin-ui's `tray` getter); clicking it navigates to this page.
     yield ctx.ui.contribute({
       kind: 'route',
       id: 'visualizer-meters.page',
