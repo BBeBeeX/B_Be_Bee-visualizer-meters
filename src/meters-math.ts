@@ -737,3 +737,17 @@ export function loudnessRange(shortHistory: readonly number[]): {
   const sorted = [...shortHistory].sort((a, b) => a - b)
   return { p10: percentile(sorted, 0.1), p95: percentile(sorted, 0.95) }
 }
+
+/**
+ * Whole-second step between time-axis labels, so adjacent labels never
+ * collide: a step of 1 s over a 34 s window in ~560 px puts labels ~16 px
+ * apart, narrower than the labels themselves, and they overprint into an
+ * unreadable strip. The step is the smallest whole number of seconds
+ * whose on-screen spacing is at least `minGapPx` (default 40 px — a
+ * "34s" label at 10 px font is ~20 px wide, so 40 px leaves a clear gap).
+ * Pure so the spectrogram's label spacing is regression-tested.
+ */
+export function timeAxisStep(windowSec: number, plotW: number, minGapPx = 40): number {
+  if (!(windowSec > 0) || !(plotW > 0)) return 1
+  return Math.max(1, Math.ceil((windowSec * minGapPx) / plotW))
+}

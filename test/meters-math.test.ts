@@ -33,6 +33,7 @@ import {
   loudnessRange,
   smoothDisplayValue,
   stepVu,
+  timeAxisStep,
 } from '../src/meters-math.ts'
 
 const approx = (actual: number, expected: number, epsilon = 1e-6) =>
@@ -292,4 +293,28 @@ test('columnEnvelopeFlat matches columnEnvelope and reuses its buffer', () => {
   assert.equal(again.buffer, buf.buffer)
   assert.deepEqual(columnEnvelopeFlat(new Float32Array(0), 3, new Float32Array(0)), new Float32Array(9))
   assert.equal(columnEnvelopeFlat(samples, 0, new Float32Array(0)).length, 0)
+})
+
+test('timeAxisStep keeps adjacent time labels at least 40 px apart', () => {
+  // The reported bug: 34 s in ~560 px labelled every second, ~16 px per
+  // label, overprinting into an unreadable strip.
+  assert.equal(timeAxisStep(34, 560), 3)
+  assert.ok((3 / 34) * 560 >= 40)
+  // Short windows keep the 1 s step.
+  assert.equal(timeAxisStep(5, 560), 1)
+  assert.equal(timeAxisStep(10, 560), 1)
+  // Long windows step up, and the spacing guarantee holds generally.
+  for (const [windowSec, plotW] of [
+    [60, 560],
+    [120, 560],
+    [300, 900],
+    [34, 300],
+  ] as const) {
+    const step = timeAxisStep(windowSec, plotW)
+    assert.ok(step >= 1 && Number.isInteger(step))
+    assert.ok((step / windowSec) * plotW >= 40)
+  }
+  // Degenerate inputs fall back to 1 rather than Infinity/NaN.
+  assert.equal(timeAxisStep(0, 560), 1)
+  assert.equal(timeAxisStep(34, 0), 1)
 })

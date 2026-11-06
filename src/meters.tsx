@@ -48,6 +48,7 @@ import {
   smoothDisplayValue,
   stepLoudness,
   stepVu,
+  timeAxisStep,
   WaterfallBuffer,
   type LoudnessState,
   type VuState,
@@ -1080,7 +1081,12 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         if (windowSec >= 1) {
           g.fillStyle = AURA.muted
           g.textAlign = 'center'
-          for (let s = 0; s <= Math.floor(windowSec); s++) {
+          // Label every `step` seconds, not every second: over a long
+          // window the per-second labels overprint (34 s in ~560 px is
+          // ~16 px per label). The step keeps adjacent labels >= 40 px
+          // apart; the window span and the data are unchanged.
+          const step = timeAxisStep(windowSec, plotW)
+          for (let s = 0; s <= Math.floor(windowSec); s += step) {
             const x = plotLeft + (s / windowSec) * plotW
             if (x < plotLeft + 8 || x > plotRight - 8) continue
             g.fillText(`${s}s`, x, h - 4)
@@ -1542,7 +1548,10 @@ function PhaseCorrelation({ source }: MeterProps): ReactElement {
       g.textAlign = 'right'
       g.fillText(correlation.toFixed(2), w - 4, 18)
       g.textAlign = 'left'
-      if (correlation < 0) {
+      // Warn only on meaningfully negative correlation. Near-zero values
+      // (e.g. -0.03 on uncorrelated content) are measurement noise, not
+      // a phase problem — warning on any negative value cried wolf.
+      if (correlation < -0.2) {
         g.fillStyle = AURA.peak
         g.font = '11px sans-serif'
         g.fillText('负相关警告', 4, top + 14)
