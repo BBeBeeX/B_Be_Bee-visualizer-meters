@@ -350,7 +350,25 @@ function DashboardCard({
           cursor: 'nwse-resize',
           touchAction: 'none',
         }}
-      />
+      >
+        {/* Visible grip only — the div, its size, and its drag handler
+            are unchanged. pointerEvents none so the glyph can never
+            steal the drag. */}
+        <svg
+          className="dash-grip"
+          aria-hidden="true"
+          width={12}
+          height={12}
+          viewBox="0 0 12 12"
+          style={{ position: 'absolute', right: 2, bottom: 2, pointerEvents: 'none' }}
+        >
+          <g stroke={AURA.muted} strokeWidth={1.2} strokeLinecap="round">
+            <line x1={11} y1={2} x2={2} y2={11} />
+            <line x1={11} y1={6} x2={6} y2={11} />
+            <line x1={11} y1={10} x2={10} y2={11} />
+          </g>
+        </svg>
+      </div>
     </div>
   )
 }
@@ -550,6 +568,8 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
         .dash-nav:hover { background: var(--dash-hover) !important; }
         .dash-card:hover { border-color: rgba(127, 231, 196, 0.45) !important; }
         .dash-btn:hover { background: var(--dash-hover) !important; }
+        .dash-grip { opacity: 0.55; transition: opacity 0.15s ease; }
+        .dash-card:hover .dash-grip { opacity: 1; }
       `}</style>
 
       {/* ── Sidebar ─────────────────────────────────────────── */}
