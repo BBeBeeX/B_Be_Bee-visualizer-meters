@@ -751,3 +751,28 @@ export function timeAxisStep(windowSec: number, plotW: number, minGapPx = 40): n
   if (!(windowSec > 0) || !(plotW > 0)) return 1
   return Math.max(1, Math.ceil((windowSec * minGapPx) / plotW))
 }
+
+/**
+ * Time-ago ticks for the spectrogram axis. The strip's right edge is
+ * always "now", so ticks march left in whole seconds ago: each entry is
+ * `{ ago, frac }` with `frac` the tick's position across the plot (0 =
+ * left edge, 1 = right edge), i.e. `x = plotLeft + frac * plotW`. The
+ * step reuses `timeAxisStep`, so adjacent labels stay >= 40 px apart.
+ * The "now" label itself is the renderer's job (right-aligned at the
+ * edge, not a centred tick). Pure so the axis layout is regression-
+ * tested: window-relative labels starting at 0 s once read as "the
+ * first N seconds of the song" because the numbers never advance once
+ * the ring is full — time-ago labels cannot be read that way.
+ */
+export function timeAgoTicks(
+  windowSec: number,
+  plotW: number,
+): Array<{ ago: number; frac: number }> {
+  if (!(windowSec > 0) || !(plotW > 0)) return []
+  const step = timeAxisStep(windowSec, plotW)
+  const ticks: Array<{ ago: number; frac: number }> = []
+  for (let ago = step; ago <= Math.floor(windowSec); ago += step) {
+    ticks.push({ ago, frac: 1 - ago / windowSec })
+  }
+  return ticks
+}

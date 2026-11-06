@@ -33,6 +33,7 @@ import {
   loudnessRange,
   smoothDisplayValue,
   stepVu,
+  timeAgoTicks,
   timeAxisStep,
 } from '../src/meters-math.ts'
 
@@ -317,4 +318,28 @@ test('timeAxisStep keeps adjacent time labels at least 40 px apart', () => {
   // Degenerate inputs fall back to 1 rather than Infinity/NaN.
   assert.equal(timeAxisStep(0, 560), 1)
   assert.equal(timeAxisStep(34, 0), 1)
+})
+
+test('timeAgoTicks marches left from now in whole seconds ago', () => {
+  // 32 s window in 600 px: step 3 s, ticks at 3..30 s ago, newest first.
+  const ticks = timeAgoTicks(32, 600)
+  assert.deepEqual(
+    ticks.map((t) => t.ago),
+    [3, 6, 9, 12, 15, 18, 21, 24, 27, 30],
+  )
+  // Fractions run right (1) to left (0); adjacent labels stay >= 40 px apart.
+  assert.ok(ticks[0]!.frac > ticks[1]!.frac)
+  approx(ticks[0]!.frac, 1 - 3 / 32)
+  approx(ticks.at(-1)!.frac, 1 - 30 / 32)
+  for (let i = 1; i < ticks.length; i++) {
+    assert.ok((ticks[i - 1]!.frac - ticks[i]!.frac) * 600 >= 40)
+  }
+  // Short windows keep the 1 s step and reach the oldest column.
+  assert.deepEqual(
+    timeAgoTicks(5, 600).map((t) => t.ago),
+    [1, 2, 3, 4, 5],
+  )
+  // Degenerate inputs yield no ticks rather than Infinity/NaN.
+  assert.deepEqual(timeAgoTicks(0, 600), [])
+  assert.deepEqual(timeAgoTicks(32, 0), [])
 })

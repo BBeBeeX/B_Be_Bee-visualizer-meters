@@ -48,6 +48,7 @@ import {
   smoothDisplayValue,
   stepLoudness,
   stepVu,
+  timeAgoTicks,
   timeAxisStep,
   WaterfallBuffer,
   type LoudnessState,
@@ -937,7 +938,9 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
 /* ── 6. Spectrogram — scrolling log-frequency waterfall ────────────────── */
 
 const SPECTROGRAM_ROWS = 64
-const SPECTROGRAM_COLUMNS = 240
+// 480 columns at the 15 fps draw rate is a ~32 s window: the ring keeps
+// the most recent period, the right edge is always "now".
+const SPECTROGRAM_COLUMNS = 480
 
 const heatLut = buildPaletteLut(HEAT_STOPS)
 
@@ -945,7 +948,7 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
   const waterfallRef = useRef<WaterfallBuffer | null>(null)
   const stripRef = useRef<HTMLCanvasElement | null>(null)
   // Reused pixel buffers: the strip used to be repainted from the
-  // whole ring every frame (a fresh 240×64 ImageData plus 15k LUT
+  // whole ring every frame (a fresh 480×64 ImageData plus 30k LUT
   // lookups). Now only the newest column is painted per draw.
   const colImageRef = useRef<ImageData | null>(null)
   const fullImageRef = useRef<ImageData | null>(null)
@@ -1070,9 +1073,13 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       g.textAlign = 'right'
       g.fillText('Log', plotRight, plotTop + 10)
       g.textAlign = 'left'
-      // Time axis (bottom edge): window-relative seconds from the real
-      // push history — 0 s at the oldest column, the window span at
-      // the newest — not an assumed frame rate.
+      // Time axis (bottom edge): seconds *ago* from the right edge,
+      // which is always "now". The old window-relative labels (0 s at
+      // the oldest column, window span at the newest) read as "the
+      // first N seconds of the song" because the numbers never advance
+      // once the ring is full — the strip really is the most recent
+      // window, the axis just did not say so. Times come from the real
+      // push history, not an assumed frame rate.
       const stamps = timeRef.current
       if (stamps.length > 1) {
         const first = stamps[0]!
@@ -1080,16 +1087,14 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         const windowSec = (newest - first) / 1000
         if (windowSec >= 1) {
           g.fillStyle = AURA.muted
+          // Right edge: now, right-aligned so it never clips.
+          g.textAlign = 'right'
+          g.fillText('现在', plotRight, h - 4)
           g.textAlign = 'center'
-          // Label every `step` seconds, not every second: over a long
-          // window the per-second labels overprint (34 s in ~560 px is
-          // ~16 px per label). The step keeps adjacent labels >= 40 px
-          // apart; the window span and the data are unchanged.
-          const step = timeAxisStep(windowSec, plotW)
-          for (let s = 0; s <= Math.floor(windowSec); s += step) {
-            const x = plotLeft + (s / windowSec) * plotW
-            if (x < plotLeft + 8 || x > plotRight - 8) continue
-            g.fillText(`${s}s`, x, h - 4)
+          for (const { ago, frac } of timeAgoTicks(windowSec, plotW)) {
+            const x = plotLeft + frac * plotW
+            if (x < plotLeft + 10 || x > plotRight - 10) continue
+            g.fillText(`-${ago}s`, x, h - 4)
           }
           g.textAlign = 'left'
         }
