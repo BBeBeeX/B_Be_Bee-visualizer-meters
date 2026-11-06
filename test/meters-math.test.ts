@@ -21,6 +21,7 @@ import {
   buildPaletteLut,
   byteToSample,
   columnEnvelope,
+  columnEnvelopeFlat,
   computePeak,
   computeRms,
   createVuState,
@@ -273,4 +274,22 @@ test('columnEnvelope keeps every sample in exactly one column', () => {
     { min: 0, max: 0, mean: 0 },
   ])
   assert.deepEqual(columnEnvelope(sine, 0), [])
+})
+
+test('columnEnvelopeFlat matches columnEnvelope and reuses its buffer', () => {
+  const samples = new Float32Array([0, 0, 0, 0.9, 0, 0, 0, -0.5])
+  const objects = columnEnvelope(samples, 2)
+  let buf: Float32Array = new Float32Array(0)
+  buf = columnEnvelopeFlat(samples, 2, buf)
+  assert.equal(buf.length, 6)
+  for (let c = 0; c < 2; c++) {
+    approx(buf[c * 3]!, objects[c]!.min)
+    approx(buf[c * 3 + 1]!, objects[c]!.max)
+    approx(buf[c * 3 + 2]!, objects[c]!.mean)
+  }
+  // Second call reuses the same storage.
+  const again = columnEnvelopeFlat(samples, 2, buf)
+  assert.equal(again.buffer, buf.buffer)
+  assert.deepEqual(columnEnvelopeFlat(new Float32Array(0), 3, new Float32Array(0)), new Float32Array(9))
+  assert.equal(columnEnvelopeFlat(samples, 0, new Float32Array(0)).length, 0)
 })

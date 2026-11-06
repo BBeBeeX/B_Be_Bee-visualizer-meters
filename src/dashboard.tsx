@@ -46,7 +46,7 @@ import { createVisualizerFrameSource } from './audio-frame.js'
 import type { FrameSource } from './audio-frame.js'
 import { serviceOf } from './service-of.js'
 import type { ServiceLookupContext } from './service-of.js'
-import { MeterCanvas } from './meters.js'
+import { MeterCanvas, getMeterPerfStats, type MeterPerfStat } from './meters.js'
 import {
   AURA,
   auraBadgeStyle,
@@ -398,14 +398,19 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
 
   const [drawer, setDrawer] = useState<DrawerId>('workspace')
   const [activePreset, setActivePreset] = useState<DashboardPresetId>('studio')
+  const [perfStats, setPerfStats] = useState<MeterPerfStat[]>([])
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [isFullscreen, setIsFullscreen] = useState(false)
-  // 1 Hz refresh for the header readouts only (rate/channels are live
-  // getters; the header must re-render to show a change). Meter
-  // canvases run their own rAF loops and are unaffected.
+  // 1 Hz refresh for the header readouts and the frame-time table
+  // (rate/channels are live getters; the header must re-render to
+  // show a change). Meter canvases draw on the shared pump in
+  // `./meters.tsx` and are unaffected by this timer.
   const [, setHeaderTick] = useState(0)
   useEffect(() => {
-    const timer = setInterval(() => setHeaderTick((t) => t + 1), 1000)
+    const timer = setInterval(() => {
+      setHeaderTick((t) => t + 1)
+      setPerfStats(getMeterPerfStats())
+    }, 1000)
     return () => clearInterval(timer)
   }, [])
 
@@ -784,12 +789,25 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
               </>
             )}
             {drawer === 'about' && (
-              <span style={{ color: shell.muted, lineHeight: 1.6 }}>
-                AURA Studio Dashboard — bbebee-plugin-visualizer-meters 的工作站视图。
-                全部表头读真实 visualizer 服务数据；响度为近似值（无 K 计权、单声道字节数据）；
-                立体声表头在单声道源下显示占位，不伪造第二声道；顶栏不显示位深，因为帧数据不携带位深；
-                浅色主题只换壳颜色，表头画布保持深色工作台面。
-              </span>
+              <>
+                <span style={{ color: shell.muted, lineHeight: 1.6 }}>
+                  AURA Studio Dashboard — bbebee-plugin-visualizer-meters 的工作站视图。
+                  全部表头读真实 visualizer 服务数据；响度为近似值（无 K 计权、单声道字节数据）；
+                  立体声表头在单声道源下显示占位，不伪造第二声道；顶栏不显示位深，因为帧数据不携带位深；
+                  浅色主题只换壳颜色，表头画布保持深色工作台面。
+                </span>
+                {perfStats.length > 0 && (
+                  <span style={{ display: 'block', width: '100%', marginTop: 8, lineHeight: 1.8 }}>
+                    <span style={{ color: shell.text }}>帧时间（每表每帧绘制耗时，1 Hz 刷新）</span>
+                    {perfStats.map((stat) => (
+                      <span key={stat.id} style={{ display: 'block', color: shell.muted }}>
+                        {METER_META[stat.kind].titleZh} {METER_META[stat.kind].title} — 平均{' '}
+                        {stat.avgMs.toFixed(2)} ms · 最慢 {stat.maxMs.toFixed(2)} ms · {stat.draws} 帧
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </>
             )}
           </div>
         )}
@@ -971,6 +989,9 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
         <p style={{ margin: 0, padding: '10px 16px', fontSize: 11, color: shell.faint }}>
           拖动标题栏移动卡片，拖右下角缩放卡片，网格吸附 {WORKSPACE_GRID_PX}px。
           布局与工作区页面共享同一保存位置；倍频程 1/1 与 1/3 切换为面板会话内状态，不随工作区保存。
+          {perfStats.length > 0
+            ? ` 帧时间：${perfStats.length} 表合计平均 ${perfStats.reduce((sum, stat) => sum + stat.avgMs, 0).toFixed(1)} ms/帧，最慢 ${METER_META[perfStats[0]!.kind].titleZh} ${perfStats[0]!.avgMs.toFixed(1)} ms（明细见 About）。`
+            : ' 帧时间统计收集中…'}
         </p>
       </div>
     </div>

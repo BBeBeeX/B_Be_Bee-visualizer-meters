@@ -29,7 +29,7 @@ import {
   aggregateOctaveBands,
   buildPaletteLut,
   byteToDb,
-  columnEnvelope,
+  columnEnvelopeFlat,
   computePeak,
   computeRms,
   computeStereoLevels,
@@ -142,21 +142,38 @@ function gridLines(
 }
 
 /**
- * Runs `draw` with a soft mint glow, then restores the context.
- * `shadowBlur` is expensive, so it is used only for the one live
- * trace per meter — never for grids, dots, or fills.
+ * Fake glow: the same path stroked three times — wide and faint,
+ * medium, then the real line. Visually the soft mint halo the
+ * reference has; computationally just two extra strokes.
+ *
+ * The previous version used `shadowBlur`, which is the single most
+ * expensive thing a canvas does (it rasterises the path into an
+ * offscreen blur on every frame, per trace, per meter). `buildPath`
+ * only constructs the path (`beginPath` + `moveTo`/`lineTo`); it must
+ * not set styles or stroke — this function strokes once per pass.
  */
 function withGlow(
   g: CanvasRenderingContext2D,
   color: string,
-  blur: number,
-  draw: () => void,
+  width: number,
+  buildPath: () => void,
 ): void {
-  g.save()
-  g.shadowColor = color
-  g.shadowBlur = blur
-  draw()
-  g.restore()
+  const passes: Array<readonly [number, number]> = [
+    [3.2, 0.1],
+    [1.9, 0.2],
+    [1, 1],
+  ]
+  for (const [mult, alpha] of passes) {
+    g.save()
+    g.globalAlpha = alpha
+    g.strokeStyle = color
+    g.lineWidth = width * mult
+    g.lineJoin = 'round'
+    g.lineCap = 'round'
+    buildPath()
+    g.stroke()
+    g.restore()
+  }
 }
 
 /**
@@ -208,51 +225,215 @@ function drawCentreHalo(
   g.fill()
 }
 
+/* ── Frame-time instrument ───────────────────────────────────────────────
+ *
+ * Rolling per-meter draw cost, for the dashboard's About drawer and
+ * footer. One entry per live meter instance (kind + instance id —
+ * the same kind can appear twice in a workspace). Entries are
+ * removed when the meter unmounts, so the table never shows ghosts.
+ */
+export interface MeterPerfStat {
+  id: number
+  kind: MeterKind
+  draws: number
+  avgMs: number
+  maxMs: number
+  lastMs: number
+}
+
+const perfById = new Map<
+  number,
+  { kind: MeterKind; draws: number; totalMs: number; maxMs: number; lastMs: number }
+>()
+
+function recordMeterDraw(id: number, kind: MeterKind, ms: number): void {
+  const entry = perfById.get(id)
+  if (entry) {
+    entry.draws += 1
+    entry.totalMs += ms
+    entry.maxMs = Math.max(entry.maxMs, ms)
+    entry.lastMs = ms
+  } else {
+    perfById.set(id, { kind, draws: 1, totalMs: ms, maxMs: ms, lastMs: ms })
+  }
+}
+
+export function getMeterPerfStats(): MeterPerfStat[] {
+  return [...perfById.entries()]
+    .map(([id, e]) => ({
+      id,
+      kind: e.kind,
+      draws: e.draws,
+      avgMs: e.draws === 0 ? 0 : e.totalMs / e.draws,
+      maxMs: e.maxMs,
+      lastMs: e.lastMs,
+    }))
+    .sort((a, b) => b.avgMs - a.avgMs)
+}
+
+export function resetMeterPerfStats(): void {
+  perfById.clear()
+}
+
+/* ── Shared frame pump ───────────────────────────────────────────────────
+ *
+ * One rAF loop for every meter on the page, instead of one per meter.
+ * Each pump tick (at most 30 fps — audio meters do not need 60, and
+ * 120 Hz displays were drawing at 120 fps):
+ * - pulls one frame per distinct source (eleven meters sharing one
+ *   source used to pull eleven frames, with eleven sets of Analyser
+ *   native calls and slice copies);
+ * - draws only the meters that are due (per-kind frame rate) and
+ *   visible (IntersectionObserver — panels below the fold sleep);
+ * - records each draw's cost in the perf registry above.
+ * The loop runs only while at least one meter is subscribed.
+ */
+
+const PUMP_INTERVAL_MS = 1000 / 30
+
+/** Draw rate per meter kind. The waterfall advances one column per draw, so 15 fps is its real update rate too. */
+const METER_FPS: Record<MeterKind, number> = {
+  'fft-analyzer': 30,
+  oscilloscope: 30,
+  'octave-analyzer': 30,
+  spectrogram: 15,
+  'xy-scope': 30,
+  'spectrum-analyzer': 30,
+  waveform: 30,
+  'stereo-level': 30,
+  loudness: 30,
+  'stereo-field': 30,
+  'phase-correlation': 30,
+}
+
+interface PumpSubscriber {
+  id: number
+  kind: MeterKind
+  fps: number
+  source: FrameSource
+  visible: boolean
+  lastDrawAt: number
+  render: (frame: AudioFrame | null) => void
+}
+
+const pumpSubscribers = new Set<PumpSubscriber>()
+let pumpRafId = 0
+let pumpLastTick = 0
+
+function pumpTick(now: number): void {
+  pumpRafId = requestAnimationFrame(pumpTick)
+  if (now - pumpLastTick < PUMP_INTERVAL_MS) return
+  pumpLastTick = now
+  const dueBySource = new Map<FrameSource, PumpSubscriber[]>()
+  for (const sub of pumpSubscribers) {
+    if (!sub.visible) continue
+    if (now - sub.lastDrawAt < 1000 / sub.fps - 1) continue
+    const list = dueBySource.get(sub.source)
+    if (list) list.push(sub)
+    else dueBySource.set(sub.source, [sub])
+  }
+  for (const [source, subs] of dueBySource) {
+    const frame = source.available ? source.pull() : null
+    for (const sub of subs) {
+      sub.lastDrawAt = now
+      const start = performance.now()
+      sub.render(frame)
+      recordMeterDraw(sub.id, sub.kind, performance.now() - start)
+    }
+  }
+}
+
+function pumpSubscribe(sub: PumpSubscriber): void {
+  const wasEmpty = pumpSubscribers.size === 0
+  pumpSubscribers.add(sub)
+  if (wasEmpty) {
+    pumpLastTick = 0
+    pumpRafId = requestAnimationFrame(pumpTick)
+  }
+}
+
+function pumpUnsubscribe(sub: PumpSubscriber): void {
+  pumpSubscribers.delete(sub)
+  perfById.delete(sub.id)
+  if (pumpSubscribers.size === 0 && pumpRafId !== 0) {
+    cancelAnimationFrame(pumpRafId)
+    pumpRafId = 0
+  }
+}
+
+let pumpInstanceId = 0
+
 /**
- * One rAF loop per meter: pull a frame, draw it, repeat. The draw
+ * One shared pump subscription per meter: the meter owns its canvas
+ * sizing (ResizeObserver, DPR capped at 2 — a 3x backing store is 9x
+ * the pixels for no visible gain), the pump owns the tick. The draw
  * function is read through a ref so control changes (palette, zoom)
- * never tear the loop down; per-meter state (waterfall, VU, loudness,
- * history) lives in the component's refs and survives loop restarts.
+ * never tear the subscription down; per-meter state (waterfall, VU,
+ * loudness, history) lives in the component's refs and survives it.
  */
 function useMeterCanvas(
   source: FrameSource,
   draw: DrawFn,
   deps: readonly unknown[],
+  kind: MeterKind,
 ): RefObject<HTMLCanvasElement | null> {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const drawRef = useRef(draw)
   drawRef.current = draw
+  const idRef = useRef(0)
+  if (idRef.current === 0) {
+    pumpInstanceId += 1
+    idRef.current = pumpInstanceId
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const g = canvas.getContext('2d')
     if (!g) return
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+    // DPR cap: Retina 2x is the visible limit for 1-2 px meter lines;
+    // 3x would triple the rasterised pixels for nothing.
+    const dpr = () => Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
+    let scale = dpr()
     let cssWidth = 320
     let cssHeight = 200
     const resize = () => {
       const rect = canvas.getBoundingClientRect()
       cssWidth = rect.width || 320
       cssHeight = rect.height || 200
-      canvas.width = Math.max(1, Math.floor(cssWidth * dpr))
-      canvas.height = Math.max(1, Math.floor(cssHeight * dpr))
+      scale = dpr()
+      canvas.width = Math.max(1, Math.floor(cssWidth * scale))
+      canvas.height = Math.max(1, Math.floor(cssHeight * scale))
     }
     resize()
     const observer =
       typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => resize()) : null
     observer?.observe(canvas)
-    let animId = 0
-    const render = () => {
-      animId = requestAnimationFrame(render)
-      const frame = source.available ? source.pull() : null
-      g.setTransform(dpr, 0, 0, dpr, 0, 0)
-      g.clearRect(0, 0, cssWidth, cssHeight)
-      drawRef.current(g, cssWidth, cssHeight, frame)
+    const sub: PumpSubscriber = {
+      id: idRef.current,
+      kind,
+      fps: METER_FPS[kind] ?? 30,
+      source,
+      visible: true,
+      lastDrawAt: 0,
+      render: (frame) => {
+        g.setTransform(scale, 0, 0, scale, 0, 0)
+        g.clearRect(0, 0, cssWidth, cssHeight)
+        drawRef.current(g, cssWidth, cssHeight, frame)
+      },
     }
-    animId = requestAnimationFrame(render)
+    pumpSubscribe(sub)
+    const visibility =
+      typeof IntersectionObserver !== 'undefined'
+        ? new IntersectionObserver((entries) => {
+            const entry = entries[0]
+            if (entry) sub.visible = entry.isIntersecting
+          })
+        : null
+    visibility?.observe(canvas)
     return () => {
-      if (animId) cancelAnimationFrame(animId)
+      pumpUnsubscribe(sub)
+      visibility?.disconnect()
       observer?.disconnect()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -346,9 +527,7 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         g.closePath()
         g.fill()
       }
-      withGlow(g, 'rgba(127, 231, 196, 0.55)', 6, () => {
-        g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
-        g.lineWidth = 1.5
+      withGlow(g, `rgb(${pr}, ${pg}, ${pb})`, 1.5, () => {
         g.beginPath()
         let started = false
         for (const [x, y] of points) {
@@ -357,7 +536,6 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
             started = true
           } else g.lineTo(x, y)
         }
-        g.stroke()
       })
       g.strokeStyle = AURA.peakSoft
       g.lineWidth = 1
@@ -377,6 +555,7 @@ function FftAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       if (assumed) drawNote(g, w, h, '48 kHz assumed')
     },
     [palette, zoom],
+    'fft-analyzer',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -461,9 +640,7 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
         g.fill()
       }
       const [pr, pg, pb] = lutColor(lut, 255)
-      withGlow(g, 'rgba(127, 231, 196, 0.55)', 6, () => {
-        g.strokeStyle = `rgb(${pr}, ${pg}, ${pb})`
-        g.lineWidth = 1.5
+      withGlow(g, `rgb(${pr}, ${pg}, ${pb})`, 1.5, () => {
         g.beginPath()
         let started = false
         for (const [x, y] of points) {
@@ -472,7 +649,6 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
             started = true
           } else g.lineTo(x, y)
         }
-        g.stroke()
       })
       // Peak-hold line: the raw band maxima, decaying slowly.
       g.strokeStyle = AURA.peakSoft
@@ -510,6 +686,7 @@ function SpectrumAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactEleme
       g.textAlign = 'left'
     },
     [palette, zoom],
+    'spectrum-analyzer',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -571,6 +748,7 @@ function OctaveAnalyzer({ source, palette, zoom = 1 }: MeterProps): ReactElement
       g.fillText(`fftSize=${fftSize}${assumed ? ' · 48 kHz assumed' : ''}`, 2, 12)
     },
     [palette, zoom, fraction],
+    'octave-analyzer',
   )
   const toggleStyle = (active: boolean): CSSProperties => ({
     ...auraSmallButtonStyle,
@@ -628,9 +806,7 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
       const visibleMs = (traces[0]!.samples.length / Math.max(0.5, zoom) / sr) * 1000
       for (const trace of traces) {
         const count = Math.max(2, Math.floor(trace.samples.length / Math.max(0.5, zoom)))
-        withGlow(g, trace.color, 6, () => {
-          g.strokeStyle = trace.color
-          g.lineWidth = 1.5
+        withGlow(g, trace.color, 1.5, () => {
           g.beginPath()
           for (let i = 0; i < count; i++) {
             const x = (i / (count - 1)) * w
@@ -638,7 +814,6 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
             if (i === 0) g.moveTo(x, y)
             else g.lineTo(x, y)
           }
-          g.stroke()
         })
       }
       g.fillStyle = AURA.muted
@@ -652,6 +827,7 @@ function Oscilloscope({ source, zoom = 1 }: MeterProps): ReactElement {
       if (assumed) drawNote(g, w, h, '48 kHz assumed')
     },
     [zoom],
+    'oscilloscope',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -662,6 +838,12 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
   const monoHistory = useRef(new TimeHistory(48000))
   const leftHistory = useRef(new TimeHistory(48000))
   const rightHistory = useRef(new TimeHistory(48000))
+  // Reused scratch buffers: the snapshot and the envelope used to be
+  // fresh allocations every frame (2 × 192 KB + ~800 small objects).
+  const monoSnapRef = useRef<Float32Array>(new Float32Array(0))
+  const leftSnapRef = useRef<Float32Array>(new Float32Array(0))
+  const rightSnapRef = useRef<Float32Array>(new Float32Array(0))
+  const envRef = useRef<Float32Array>(new Float32Array(0))
   const ref = useMeterCanvas(
     source,
     (g, w, h, frame) => {
@@ -694,45 +876,46 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
         // the envelope band is the same data, drawn the way the
         // reference figure draws it: translucent fill, bright centre.
         const columns = Math.max(2, Math.floor(w))
-        const envelope = columnEnvelope(slice, columns)
+        const flat = columnEnvelopeFlat(slice, columns, envRef.current)
+        envRef.current = flat
         const colW = w / columns
         g.fillStyle = 'rgba(127, 231, 196, 0.22)'
         g.beginPath()
         let first = true
-        for (let c = 0; c < envelope.length; c++) {
+        for (let c = 0; c < columns; c++) {
           const x = c * colW
-          const yTop = midY - envelope[c]!.max * half
+          const yTop = midY - flat[c * 3 + 1]! * half
           if (first) {
             g.moveTo(x, yTop)
             first = false
           } else g.lineTo(x, yTop)
         }
-        for (let c = envelope.length - 1; c >= 0; c--) {
+        for (let c = columns - 1; c >= 0; c--) {
           const x = c * colW
-          g.lineTo(x, midY - envelope[c]!.min * half)
+          g.lineTo(x, midY - flat[c * 3]! * half)
         }
         g.closePath()
         g.fill()
-        withGlow(g, color, 5, () => {
-          g.strokeStyle = color
-          g.lineWidth = 1.2
+        withGlow(g, color, 1.2, () => {
           g.beginPath()
-          for (let c = 0; c < envelope.length; c++) {
+          for (let c = 0; c < columns; c++) {
             const x = c * colW + colW / 2
-            const y = midY - envelope[c]!.mean * half
+            const y = midY - flat[c * 3 + 2]! * half
             if (c === 0) g.moveTo(x, y)
             else g.lineTo(x, y)
           }
-          g.stroke()
         })
         return slice.length
       }
       let shownSamples = 0
       if (stereo) {
-        shownSamples = drawTrace(leftHistory.current.snapshot(), 0, h / 2, AURA.leftTrace)
-        drawTrace(rightHistory.current.snapshot(), h / 2, h / 2, AURA.rightTrace)
+        leftSnapRef.current = leftHistory.current.snapshotInto(leftSnapRef.current)
+        rightSnapRef.current = rightHistory.current.snapshotInto(rightSnapRef.current)
+        shownSamples = drawTrace(leftSnapRef.current, 0, h / 2, AURA.leftTrace)
+        drawTrace(rightSnapRef.current, h / 2, h / 2, AURA.rightTrace)
       } else {
-        shownSamples = drawTrace(monoHistory.current.snapshot(), 0, h, AURA.leftTrace)
+        monoSnapRef.current = monoHistory.current.snapshotInto(monoSnapRef.current)
+        shownSamples = drawTrace(monoSnapRef.current, 0, h, AURA.leftTrace)
       }
       // The history window in seconds: the ring holds 48000 samples
       // (1 s at 48 kHz), so the window is the filled length, not a
@@ -745,6 +928,7 @@ function Waveform({ source, zoom = 1 }: MeterProps): ReactElement {
       )
     },
     [zoom],
+    'waveform',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -759,6 +943,11 @@ const heatLut = buildPaletteLut(HEAT_STOPS)
 function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
   const waterfallRef = useRef<WaterfallBuffer | null>(null)
   const stripRef = useRef<HTMLCanvasElement | null>(null)
+  // Reused pixel buffers: the strip used to be repainted from the
+  // whole ring every frame (a fresh 240×64 ImageData plus 15k LUT
+  // lookups). Now only the newest column is painted per draw.
+  const colImageRef = useRef<ImageData | null>(null)
+  const fullImageRef = useRef<ImageData | null>(null)
   // Push timestamps, oldest → newest, parallel to the waterfall
   // columns: the time axis is drawn from real elapsed time, not from
   // an assumed frame rate (60 Hz panels and 120 Hz panels would
@@ -803,25 +992,55 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
         }
       }
       visibleRows = Math.max(8, visibleRows)
-      if (strip.width !== SPECTROGRAM_COLUMNS || strip.height !== visibleRows) {
+      const rebuilt = strip.width !== SPECTROGRAM_COLUMNS || strip.height !== visibleRows
+      if (rebuilt) {
         strip.width = SPECTROGRAM_COLUMNS
         strip.height = visibleRows
+        colImageRef.current = new ImageData(1, visibleRows)
+        fullImageRef.current = new ImageData(strip.width, strip.height)
       }
-      const image = stripCtx.createImageData(strip.width, strip.height)
-      for (let x = 0; x < strip.width; x++) {
-        const column = waterfall.columnAtAge(strip.width - 1 - x)
+      const colImage = colImageRef.current
+      const fullImage = fullImageRef.current
+      if (!colImage || !fullImage) return
+      if (rebuilt) {
+        // One full repaint from the ring (zoom change, first paint);
+        // after this, every draw only touches the newest column.
+        for (let x = 0; x < strip.width; x++) {
+          const column = waterfall.columnAtAge(strip.width - 1 - x)
+          for (let row = 0; row < visibleRows; row++) {
+            const imageRow = visibleRows - 1 - row
+            const offset = (imageRow * strip.width + x) * 4
+            const value = column ? (column[row] ?? 0) : 0
+            const [r, gg, b] = lutColor(lut, value)
+            fullImage.data[offset] = r
+            fullImage.data[offset + 1] = gg
+            fullImage.data[offset + 2] = b
+            fullImage.data[offset + 3] = 255
+          }
+        }
+        stripCtx.putImageData(fullImage, 0, 0)
+      } else {
+        // Shift the strip one column left — the source is snapshotted,
+        // so drawing a canvas onto itself is safe — then paint only
+        // the newest column on the right edge.
+        stripCtx.drawImage(
+          strip,
+          1, 0, SPECTROGRAM_COLUMNS - 1, visibleRows,
+          0, 0, SPECTROGRAM_COLUMNS - 1, visibleRows,
+        )
+        const column = waterfall.columnAtAge(0)
         for (let row = 0; row < visibleRows; row++) {
           const imageRow = visibleRows - 1 - row
-          const offset = (imageRow * strip.width + x) * 4
+          const offset = imageRow * 4
           const value = column ? (column[row] ?? 0) : 0
           const [r, gg, b] = lutColor(lut, value)
-          image.data[offset] = r
-          image.data[offset + 1] = gg
-          image.data[offset + 2] = b
-          image.data[offset + 3] = 255
+          colImage.data[offset] = r
+          colImage.data[offset + 1] = gg
+          colImage.data[offset + 2] = b
+          colImage.data[offset + 3] = 255
         }
+        stripCtx.putImageData(colImage, SPECTROGRAM_COLUMNS - 1, 0)
       }
-      stripCtx.putImageData(image, 0, 0)
       // Plot rect with real axes: frequency labels on the left, time
       // along the bottom, like the reference. The strip itself is
       // drawn inside the rect only — labels no longer sit on the heat.
@@ -871,6 +1090,7 @@ function Spectrogram({ source, palette, zoom = 1 }: MeterProps): ReactElement {
       }
     },
     [palette, zoom],
+    'spectrogram',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -899,9 +1119,7 @@ function XyScope({ source }: MeterProps): ReactElement {
       drawPolarGrid(g, cx, cy, radius)
       drawCentreHalo(g, cx, cy, radius * 0.45)
       const n = Math.min(left.length, right.length)
-      withGlow(g, 'rgba(127, 231, 196, 0.6)', 6, () => {
-        g.strokeStyle = AURA.accent
-        g.lineWidth = 1.2
+      withGlow(g, AURA.accent, 1.2, () => {
         g.beginPath()
         for (let i = 0; i < n; i++) {
           const l = left[i]!
@@ -911,13 +1129,13 @@ function XyScope({ source }: MeterProps): ReactElement {
           if (i === 0) g.moveTo(x, y)
           else g.lineTo(x, y)
         }
-        g.stroke()
       })
       g.fillStyle = AURA.muted
       g.font = '11px sans-serif'
       g.fillText(`corr ${levels.correlation.toFixed(2)}  width ${(levels.width * 100).toFixed(0)}%`, 4, 14)
     },
     [],
+    'xy-scope',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -1020,6 +1238,7 @@ function StereoLevel({ source, palette }: MeterProps): ReactElement {
       g.fillText(`${fmtDb(rmsDb)} dB`, rightColX, top + 90)
     },
     [palette],
+    'stereo-level',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -1098,9 +1317,7 @@ function Loudness({ source }: MeterProps): ReactElement {
       }
       g.stroke()
       g.strokeRect(histX + 0.5, histTop + 0.5, histW - 1, histH - 1)
-      withGlow(g, 'rgba(127, 231, 196, 0.5)', 4, () => {
-        g.strokeStyle = AURA.accent
-        g.lineWidth = 1.2
+      withGlow(g, AURA.accent, 1.2, () => {
         g.beginPath()
         state.shortHistory.forEach((lu, i) => {
           const x = histX + (i / Math.max(1, state.shortHistory.length - 1)) * histW
@@ -1108,7 +1325,6 @@ function Loudness({ source }: MeterProps): ReactElement {
           if (i === 0) g.moveTo(x, y)
           else g.lineTo(x, y)
         })
-        g.stroke()
       })
       // Segmented −60…0 bar: zone colours like the reference, the LRA
       // [p10, p95] span as an accent overlay, white tick at integrated.
@@ -1147,6 +1363,7 @@ function Loudness({ source }: MeterProps): ReactElement {
       g.textAlign = 'left'
     },
     [],
+    'loudness',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -1181,7 +1398,12 @@ function StereoField({ source }: MeterProps): ReactElement {
       // glow for this meter.
       g.fillStyle = AURA.accentSoft
       const n = Math.min(left.length, right.length)
-      for (let i = 0; i < n; i++) {
+      // Stride the cloud: at most ~256 dots per frame. A goniometer
+      // cloud at 1024 dots is indistinguishable from 256 — the dots
+      // overlap — but each fillRect is a draw call, and 1024 of them
+      // per frame was the single most expensive meter after the glow.
+      const stride = Math.max(1, Math.floor(n / 256))
+      for (let i = 0; i < n; i += stride) {
         const l = left[i]!
         const r = right[i]!
         const x = cx + ((l - r) / 2) * radius * 1.414
@@ -1230,6 +1452,7 @@ function StereoField({ source }: MeterProps): ReactElement {
       }
     },
     [],
+    'stereo-field',
   )
   return <MeterShell canvasRef={ref} />
 }
@@ -1296,9 +1519,7 @@ function PhaseCorrelation({ source }: MeterProps): ReactElement {
       g.stroke()
       // History trace, oldest at the left, newest at the right.
       const n = history.length
-      withGlow(g, 'rgba(127, 231, 196, 0.55)', 6, () => {
-        g.strokeStyle = AURA.accent
-        g.lineWidth = 1.5
+      withGlow(g, AURA.accent, 1.5, () => {
         g.beginPath()
         for (let i = 0; i < n; i++) {
           const x = n <= 1 ? w : (i / (n - 1)) * w
@@ -1306,7 +1527,6 @@ function PhaseCorrelation({ source }: MeterProps): ReactElement {
           if (i === 0) g.moveTo(x, y)
           else g.lineTo(x, y)
         }
-        g.stroke()
       })
       // Newest point: bright dot with a halo, at the right edge.
       if (n > 0) {
@@ -1334,6 +1554,7 @@ function PhaseCorrelation({ source }: MeterProps): ReactElement {
       g.fillText('+1', w - 16, h - 4)
     },
     [],
+    'phase-correlation',
   )
   return <MeterShell canvasRef={ref} />
 }

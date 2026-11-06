@@ -251,6 +251,22 @@ export class TimeHistory {
     return out
   }
 
+  /**
+   * Same snapshot written into `out` instead of a fresh allocation:
+   * the buffer is reused across frames and only grows when the
+   * history outgrows it (once, up to capacity). The returned view
+   * covers exactly the filled samples; callers keep it in a ref and
+   * pass it back next frame. Drawing at 30 fps used to allocate
+   * 2 × 192 KB per frame here — ~23 MB/s of garbage at 60 fps.
+   */
+  snapshotInto(out: Float32Array): Float32Array {
+    const target = out.length >= this.filled ? out : new Float32Array(this.filled)
+    for (let i = 0; i < this.filled; i++) {
+      target[i] = this.buffer[(this.head - this.filled + i + this.capacity * 2) % this.capacity]!
+    }
+    return target.subarray(0, this.filled)
+  }
+
   clear(): void {
     this.head = 0
     this.filled = 0

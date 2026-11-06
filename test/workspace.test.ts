@@ -220,6 +220,21 @@ test('TimeHistory returns oldest-first snapshots', () => {
   assert.deepEqual([...history.snapshot()], [0.5, -0.5, 0, 127 / 128])
 })
 
+test('TimeHistory.snapshotInto reuses the buffer and matches snapshot()', () => {
+  const history = new TimeHistory(4)
+  history.pushBytes(new Uint8Array([128, 192, 64, 128]))
+  let buf: Float32Array = new Float32Array(0)
+  buf = history.snapshotInto(buf)
+  assert.deepEqual([...buf], [0, 0.5, -0.5, 0])
+  // Second call reuses the same storage (no fresh allocation).
+  const again = history.snapshotInto(buf)
+  assert.equal(again.buffer, buf.buffer)
+  assert.deepEqual([...again], [0, 0.5, -0.5, 0])
+  history.pushBytes(new Uint8Array([255]))
+  buf = history.snapshotInto(buf)
+  assert.deepEqual([...buf], [0.5, -0.5, 0, 127 / 128])
+})
+
 /* ── new meters math ─────────────────────────────────────────────────── */
 
 test('byteToDb inverts the engine mapping', () => {

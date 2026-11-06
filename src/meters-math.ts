@@ -90,16 +90,26 @@ export interface ColumnEnvelope {
  * window (e.g. 1 s of a 440 Hz sine) therefore renders as an honest
  * constant-height band instead of a solid overdrawn polyline.
  */
-export function columnEnvelope(
+/**
+ * Flat form of {@link columnEnvelope}: `[min, max, mean]` triples
+ * written into `out` (grown once if too small) instead of one small
+ * object per column. The waveform view draws ~400 columns per lane
+ * per frame; the object form allocates ~800 objects per frame just
+ * to hold three numbers each. The returned view covers exactly
+ * `3 * columns` entries; callers keep it in a ref and pass it back.
+ */
+export function columnEnvelopeFlat(
   samples: Float32Array,
   columns: number,
-): ColumnEnvelope[] {
+  out: Float32Array,
+): Float32Array {
   const count = Math.max(0, Math.floor(columns))
-  if (count === 0) return []
-  const out: ColumnEnvelope[] = []
+  const need = count * 3
+  const target = out.length >= need ? out : new Float32Array(need)
+  if (count === 0) return target.subarray(0, 0)
   if (samples.length === 0) {
-    for (let i = 0; i < count; i++) out.push({ min: 0, max: 0, mean: 0 })
-    return out
+    target.fill(0, 0, need)
+    return target.subarray(0, need)
   }
   const perColumn = samples.length / count
   for (let c = 0; c < count; c++) {
@@ -116,7 +126,22 @@ export function columnEnvelope(
       sum += v
       n += 1
     }
-    out.push({ min: n === 0 ? 0 : min, max: n === 0 ? 0 : max, mean: n === 0 ? 0 : sum / n })
+    target[c * 3] = n === 0 ? 0 : min
+    target[c * 3 + 1] = n === 0 ? 0 : max
+    target[c * 3 + 2] = n === 0 ? 0 : sum / n
+  }
+  return target.subarray(0, need)
+}
+
+export function columnEnvelope(
+  samples: Float32Array,
+  columns: number,
+): ColumnEnvelope[] {
+  const count = Math.max(0, Math.floor(columns))
+  const flat = columnEnvelopeFlat(samples, columns, new Float32Array(0))
+  const out: ColumnEnvelope[] = []
+  for (let c = 0; c < count; c++) {
+    out.push({ min: flat[c * 3]!, max: flat[c * 3 + 1]!, mean: flat[c * 3 + 2]! })
   }
   return out
 }
