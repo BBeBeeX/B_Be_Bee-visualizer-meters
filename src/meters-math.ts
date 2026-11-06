@@ -73,6 +73,54 @@ export function dbToFraction(db: number, floorDb: number = DB_FLOOR): number {
   return clamp((db - floorDb) / (0 - floorDb), 0, 1)
 }
 
+/** One pixel column of a DAW-style waveform envelope: the true min, max and mean of the samples that fall in the column. */
+export interface ColumnEnvelope {
+  min: number
+  max: number
+  mean: number
+}
+
+/**
+ * Reduces a long sample window to one envelope entry per display column.
+ * Pure and lossless in the only sense that matters for drawing: every
+ * sample contributes to exactly one column's min/max, so a narrow peak
+ * inside a wide column still reaches the column's edge — nothing is
+ * skipped by decimation. The waveform view draws the min…max band
+ * (translucent fill) with the mean as its bright centre line; a dense
+ * window (e.g. 1 s of a 440 Hz sine) therefore renders as an honest
+ * constant-height band instead of a solid overdrawn polyline.
+ */
+export function columnEnvelope(
+  samples: Float32Array,
+  columns: number,
+): ColumnEnvelope[] {
+  const count = Math.max(0, Math.floor(columns))
+  if (count === 0) return []
+  const out: ColumnEnvelope[] = []
+  if (samples.length === 0) {
+    for (let i = 0; i < count; i++) out.push({ min: 0, max: 0, mean: 0 })
+    return out
+  }
+  const perColumn = samples.length / count
+  for (let c = 0; c < count; c++) {
+    const start = Math.floor(c * perColumn)
+    const end = Math.max(start + 1, Math.floor((c + 1) * perColumn))
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    let n = 0
+    for (let i = start; i < end && i < samples.length; i++) {
+      const v = samples[i]!
+      if (v < min) min = v
+      if (v > max) max = v
+      sum += v
+      n += 1
+    }
+    out.push({ min: n === 0 ? 0 : min, max: n === 0 ? 0 : max, mean: n === 0 ? 0 : sum / n })
+  }
+  return out
+}
+
 /* ── VU ballistics ──────────────────────────────────────────────────────── */
 
 /**

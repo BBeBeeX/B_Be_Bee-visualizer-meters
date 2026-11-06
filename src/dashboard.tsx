@@ -18,6 +18,9 @@
  * - The sidebar's input area names the real input (the `visualizer`
  *   service) and its LIVE state; it does not name an audio device,
  *   because the plugin has no device service to ask.
+ * - The Workspace drawer (open on load, like the reference) offers
+ *   the three real presets as thumbnails; "Save Current Layout"
+ *   exports the workspace JSON, since saving itself is automatic.
  * - The light theme recolours the shell only. Meter canvases stay
  *   dark: they are studio surfaces by design (the reference cards are
  *   dark in both of its theme states), and a light canvas would need
@@ -354,14 +357,14 @@ function DashboardCard({
 
 /* ── The dashboard page ────────────────────────────────────────────────── */
 
-type DrawerId = 'workspace' | 'modules' | 'presets' | 'settings' | 'about'
+type DrawerId = 'workspace' | 'modules' | 'presets' | 'settings' | 'about' | 'none'
 
-const NAV_ITEMS: Array<{ id: DrawerId; zh: string; en: string }> = [
-  { id: 'workspace', zh: '工作区', en: 'Workspace' },
-  { id: 'modules', zh: '模块', en: 'Modules' },
-  { id: 'presets', zh: '预设', en: 'Presets' },
-  { id: 'settings', zh: '设置', en: 'Settings' },
-  { id: 'about', zh: '关于', en: 'About' },
+const NAV_ITEMS: Array<{ id: DrawerId; zh: string; en: string; icon: string }> = [
+  { id: 'workspace', zh: '工作区', en: 'Workspace', icon: '▦' },
+  { id: 'modules', zh: '模块', en: 'Modules', icon: '▤' },
+  { id: 'presets', zh: '预设', en: 'Presets', icon: '✧' },
+  { id: 'settings', zh: '设置', en: 'Settings', icon: '⚙' },
+  { id: 'about', zh: '关于', en: 'About', icon: 'ⓘ' },
 ]
 
 type DashboardPresetId = 'studio' | 'compact' | 'monitor'
@@ -394,6 +397,7 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   const [drawer, setDrawer] = useState<DrawerId>('workspace')
+  const [activePreset, setActivePreset] = useState<DashboardPresetId>('studio')
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [isFullscreen, setIsFullscreen] = useState(false)
   // 1 Hz refresh for the header readouts only (rate/channels are live
@@ -456,6 +460,7 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
   }, [workspace])
 
   const applyPreset = useCallback((preset: DashboardPresetId) => {
+    setActivePreset(preset)
     setWorkspace((ws) => DASHBOARD_PRESETS[preset]!.build(ws.palette))
   }, [])
 
@@ -572,7 +577,7 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
             onClick={() => setDrawer(item.id)}
             style={navButtonStyle(drawer === item.id)}
           >
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: drawer === item.id ? AURA.accent : shell.muted, flexShrink: 0 }} />
+            <span style={{ width: 16, textAlign: 'center', fontSize: 14, color: drawer === item.id ? AURA.accent : shell.muted, flexShrink: 0 }}>{item.icon}</span>
             {item.zh}
             <span style={{ opacity: 0.6, fontSize: 11 }}>{item.en}</span>
           </button>
@@ -599,21 +604,45 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
             {rateLabel} · {channelsLabel}
           </span>
         </div>
-        <div style={{ display: 'flex', gap: 6, paddingTop: 8 }}>
-          <button
-            className="dash-btn"
-            onClick={() => setTheme('dark')}
-            style={{ ...auraButtonStyle, flex: 1, background: theme === 'dark' ? 'rgba(127, 231, 196, 0.14)' : auraButtonStyle.background, color: shell.text }}
-          >
-            Dark
-          </button>
-          <button
-            className="dash-btn"
-            onClick={() => setTheme('light')}
-            style={{ ...auraButtonStyle, flex: 1, background: theme === 'light' ? 'rgba(127, 231, 196, 0.14)' : auraButtonStyle.background, color: shell.text }}
-          >
-            Light
-          </button>
+        <div style={{ display: 'flex', gap: 8, paddingTop: 8 }}>
+          {(
+            [
+              { id: 'dark' as const, label: 'Dark', swatch: 'linear-gradient(135deg, #16242c 0%, #0a1218 100%)' },
+              { id: 'light' as const, label: 'Light', swatch: 'linear-gradient(135deg, #ffffff 0%, #dfe7ea 100%)' },
+            ]
+          ).map((option) => (
+            <button
+              key={option.id}
+              className="dash-btn"
+              onClick={() => setTheme(option.id)}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+                padding: '6px 4px 4px',
+                borderRadius: 10,
+                border: theme === option.id ? '1px solid rgba(127, 231, 196, 0.55)' : `1px solid ${shell.border}`,
+                background: 'transparent',
+                color: shell.text,
+                cursor: 'pointer',
+                fontSize: 11,
+              }}
+            >
+              <span
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  height: 26,
+                  borderRadius: 6,
+                  background: option.swatch,
+                  border: `1px solid ${shell.border}`,
+                }}
+              />
+              {option.label}
+            </button>
+          ))}
         </div>
       </aside>
 
@@ -631,7 +660,20 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
           }}
         >
           <h2 style={{ margin: 0, fontSize: 16 }}>{workspace.name} Workspace</h2>
-          <span style={{ fontSize: 12, color: shell.muted }}>▾ 布局切换见预设</span>
+          <button
+            onClick={() => setDrawer('workspace')}
+            title="工作区面板"
+            style={{ ...auraButtonStyle, color: shell.text, padding: '2px 8px' }}
+          >
+            ▾
+          </button>
+          <button
+            onClick={() => setDrawer('modules')}
+            title="添加模块"
+            style={{ ...auraButtonStyle, color: shell.text, padding: '2px 8px' }}
+          >
+            +
+          </button>
           <span style={{ flex: 1 }} />
           <span
             style={{
@@ -652,18 +694,20 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
           <span style={{ fontSize: 12, color: shell.muted }}>
             {rateLabel} · {channelsLabel}
           </span>
-          {(Object.keys(DASHBOARD_PRESETS) as DashboardPresetId[]).map((preset) => (
-            <button key={preset} onClick={() => applyPreset(preset)} style={{ ...auraButtonStyle, color: shell.text }}>
-              {DASHBOARD_PRESETS[preset]!.name}
-            </button>
-          ))}
-          <button onClick={toggleFullscreen} style={{ ...auraButtonStyle, color: shell.text }} title="全屏工作模式">
-            {isFullscreen ? '退出全屏' : '全屏'}
+          <button
+            onClick={() => setDrawer('presets')}
+            title="布局预设"
+            style={{ ...auraButtonStyle, color: shell.text, padding: '2px 8px' }}
+          >
+            ▦
+          </button>
+          <button onClick={toggleFullscreen} style={{ ...auraButtonStyle, color: shell.text, padding: '2px 8px' }} title="全屏工作模式">
+            {isFullscreen ? '✕' : '⛶'}
           </button>
         </header>
 
         {/* ── Drawer: real controls, switched by the sidebar ─── */}
-        {drawer !== 'workspace' && (
+        {drawer !== 'workspace' && drawer !== 'none' && (
           <div style={{ padding: '12px 16px', borderBottom: `1px solid ${shell.border}`, fontSize: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             {drawer === 'modules' && (
               <>
@@ -785,6 +829,144 @@ export function DashboardPage({ ctx }: { ctx: ServiceLookupContext }): ReactElem
               onFocus={(id) => setWorkspace((ws) => bringToFront(ws, id))}
             />
           ))}
+          {/* ── Workspace drawer: floating panel, like the reference ── */}
+          {drawer === 'workspace' && (
+            <div
+              style={{
+                position: 'absolute',
+                right: 16,
+                bottom: 16,
+                zIndex: 50,
+                width: 300,
+                padding: 12,
+                borderRadius: 14,
+                border: `1px solid ${shell.border}`,
+                background: shell.sidebarBackground,
+                boxShadow: '0 12px 32px rgba(0, 0, 0, 0.5)',
+                color: shell.text,
+                fontSize: 12,
+                boxSizing: 'border-box',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ fontWeight: 600 }}>▦ Workspace</span>
+                <span style={{ flex: 1 }} />
+                <button
+                  onClick={() => setDrawer('none')}
+                  title="关闭工作区面板"
+                  style={{ ...auraSmallButtonStyle, color: shell.text }}
+                >
+                  ✕
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                {(
+                  [
+                    { id: 'studio' as const, name: 'Studio', sub: 'Professional', bars: [16, 28, 12] },
+                    { id: 'compact' as const, name: 'Compact', sub: 'Minimal', bars: [14, 14, 14] },
+                    { id: 'monitor' as const, name: 'Monitor', sub: 'Wide', bars: [10, 22, 10] },
+                  ]
+                ).map((preset) => (
+                  <button
+                    key={preset.id}
+                    onClick={() => applyPreset(preset.id)}
+                    style={{
+                      flex: 1,
+                      padding: 6,
+                      borderRadius: 10,
+                      border:
+                        activePreset === preset.id
+                          ? '1px solid rgba(127, 231, 196, 0.55)'
+                          : `1px solid ${shell.border}`,
+                      background: activePreset === preset.id ? 'rgba(127, 231, 196, 0.10)' : 'transparent',
+                      color: shell.text,
+                      cursor: 'pointer',
+                      fontSize: 11,
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-end',
+                        gap: 3,
+                        height: 34,
+                        padding: 5,
+                        marginBottom: 5,
+                        borderRadius: 6,
+                        background: 'rgba(0, 0, 0, 0.35)',
+                      }}
+                    >
+                      {preset.bars.map((barH, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            flex: 1,
+                            height: barH,
+                            borderRadius: 2,
+                            background: 'linear-gradient(180deg, #7fe7c4 0%, rgba(127, 231, 196, 0.25) 100%)',
+                          }}
+                        />
+                      ))}
+                    </span>
+                    {preset.name}
+                    <span style={{ display: 'block', fontSize: 10, color: shell.muted }}>{preset.sub}</span>
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={exportWorkspace}
+                style={{ ...auraButtonStyle, width: '100%', marginBottom: 6, color: shell.text, textAlign: 'left' }}
+              >
+                ▣ Save Current Layout
+              </button>
+              <button
+                onClick={() => setDrawer('presets')}
+                style={{ ...auraButtonStyle, width: '100%', marginBottom: 6, color: shell.text, textAlign: 'left' }}
+              >
+                ◈ Manage Presets
+              </button>
+              <button
+                onClick={() => setWorkspace((ws) => ({ ...ws, snap: !ws.snap }))}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  width: '100%',
+                  padding: '4px 10px',
+                  border: 'none',
+                  background: 'transparent',
+                  color: shell.text,
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  textAlign: 'left',
+                }}
+              >
+                <span
+                  style={{
+                    width: 34,
+                    height: 18,
+                    borderRadius: 999,
+                    background: workspace.snap ? AURA.accent : 'rgba(255, 255, 255, 0.18)',
+                    position: 'relative',
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: 2,
+                      left: workspace.snap ? 18 : 2,
+                      width: 14,
+                      height: 14,
+                      borderRadius: '50%',
+                      background: '#fff',
+                    }}
+                  />
+                </span>
+                Auto Arrange
+              </button>
+            </div>
+          )}
         </div>
         <p style={{ margin: 0, padding: '10px 16px', fontSize: 11, color: shell.faint }}>
           拖动标题栏移动卡片，拖右下角缩放卡片，网格吸附 {WORKSPACE_GRID_PX}px。

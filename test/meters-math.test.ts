@@ -20,6 +20,7 @@ import {
   aggregateBands,
   buildPaletteLut,
   byteToSample,
+  columnEnvelope,
   computePeak,
   computeRms,
   createVuState,
@@ -242,4 +243,34 @@ test('HEAT_STOPS runs deep blue to yellow for the spectrogram', () => {
   const mid = lutColor(heat, 128)
   // Midpoint sits in the teal-to-mint segment: green-dominant, not hot.
   assert.ok(mid[1] > mid[0] && mid[1] > mid[2], 'heat midpoint is teal/mint')
+})
+
+test('columnEnvelope keeps every sample in exactly one column', () => {
+  // One narrow peak inside a wide column must still reach the edge.
+  const samples = new Float32Array([0, 0, 0, 0.9, 0, 0, 0, -0.5])
+  const env = columnEnvelope(samples, 2)
+  assert.equal(env.length, 2)
+  approx(env[0]!.max, 0.9)
+  assert.equal(env[0]!.min, 0)
+  approx(env[0]!.mean, 0.9 / 4)
+  approx(env[1]!.min, -0.5)
+  assert.equal(env[1]!.max, 0)
+  // A constant sine-height window keeps a constant band: the dense
+  // case that used to overdraw into a solid bar. Each column spans
+  // just over one period (120 samples at 440 Hz / 48 kHz), so every
+  // column contains a peak and a trough.
+  const sine = new Float32Array(4800)
+  for (let i = 0; i < sine.length; i++) sine[i] = 0.125 * Math.sin((i * 2 * Math.PI * 440) / 48000)
+  const band = columnEnvelope(sine, 40)
+  for (const col of band) {
+    approx(col.max, 0.125, 0.005)
+    approx(col.min, -0.125, 0.005)
+  }
+  assert.deepEqual(columnEnvelope(new Float32Array(0), 4), [
+    { min: 0, max: 0, mean: 0 },
+    { min: 0, max: 0, mean: 0 },
+    { min: 0, max: 0, mean: 0 },
+    { min: 0, max: 0, mean: 0 },
+  ])
+  assert.deepEqual(columnEnvelope(sine, 0), [])
 })

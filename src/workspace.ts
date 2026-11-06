@@ -30,8 +30,9 @@
  * "FFT Analyzer" and "Spectrum Analyzer" are deliberately separate
  * components sharing one frame source: the FFT analyzer draws the
  * per-bin line on a dB scale (analysis detail), the spectrum analyzer
- * draws log-spaced bars (at-a-glance levels). Merging them would lose
- * one of the two reference behaviours.
+ * draws a smoothed line through the same 48 log-spaced bands with a
+ * gradient fill (at-a-glance curve, as the studio figure shows).
+ * Merging them would lose one of the two reference behaviours.
  *
  * ## Persistence — no new capability
  *
@@ -110,7 +111,7 @@ export const METER_META: Record<MeterKind, MeterMeta> = {
   },
   'spectrum-analyzer': {
     title: 'Spectrum Analyzer', titleZh: '频谱', needsStereo: false, hasZoom: true,
-    description: 'Log-spaced frequency bars, at-a-glance levels.',
+    description: 'Smoothed log-band line with gradient fill and peak hold, on a dB scale.',
   },
   waveform: {
     title: 'Waveform', titleZh: '波形', needsStereo: false, hasZoom: true,
@@ -130,7 +131,7 @@ export const METER_META: Record<MeterKind, MeterMeta> = {
   },
   'phase-correlation': {
     title: 'Phase Correlation', titleZh: '相位相关', needsStereo: true, hasZoom: false,
-    description: 'Correlation history: −1…+1 on the horizontal axis, 0 at centre, newest at the bottom.',
+    description: 'Correlation history as a horizontal time series (−1 bottom, +1 top, 0 midline), newest at the right.',
   },
 }
 
@@ -390,13 +391,13 @@ export function studioDashboardWorkspace(palette: Workspace['palette'] = 'aura')
     palette,
     snap: true,
     panels: [
-      panelAt('spectrum-analyzer', 20, 20, 760, 300),
-      panelAt('loudness', 800, 20, 380, 300),
-      panelAt('stereo-field', 20, 340, 380, 300),
-      panelAt('waveform', 420, 340, 380, 300),
-      panelAt('stereo-level', 820, 340, 360, 300),
-      panelAt('spectrogram', 20, 660, 580, 300),
-      panelAt('phase-correlation', 620, 660, 560, 300),
+      panelAt('spectrum-analyzer', 20, 20, 700, 300),
+      panelAt('loudness', 740, 20, 440, 300),
+      panelAt('stereo-field', 20, 340, 340, 300),
+      panelAt('waveform', 380, 340, 440, 300),
+      panelAt('stereo-level', 840, 340, 340, 300),
+      panelAt('spectrogram', 20, 660, 620, 300),
+      panelAt('phase-correlation', 660, 660, 520, 300),
       panelAt('fft-analyzer', 20, 980, 380, 280),
       panelAt('oscilloscope', 420, 980, 380, 280),
       panelAt('octave-analyzer', 820, 980, 360, 280),
